@@ -12,6 +12,7 @@ import { StudentView } from './components/student/StudentView';
 import { TeacherView } from './components/teacher/TeacherView';
 import { SupervisorView } from './components/supervisor/SupervisorView';
 import { AdminView } from './components/admin/AdminView';
+import { PWAInstallBanner } from './components/common/PWAInstallBanner';
 
 function AppContent() {
   const { currentUser, isAuthenticated } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
     <ToastProvider>
       <AuthProvider>
         <AppContent />
+        <PWAInstallBanner />
       </AuthProvider>
     </ToastProvider>
   );

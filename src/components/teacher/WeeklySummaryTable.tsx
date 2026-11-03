@@ -147,9 +147,12 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
                       </div>
                     </div>
 
-                    <div className="text-left shrink-0">
-                      <span className="text-[15px] font-black text-teal-900 bg-teal-50 px-3 py-1.5 rounded-xl border border-teal-200 tabular-nums shadow-2xs inline-block">
-                        ⭐ {weeklyTotalPoints} / 40
+                    <div className="text-left shrink-0 flex flex-col items-end gap-1">
+                      <span className="text-[14px] font-black text-teal-900 bg-teal-50 px-2.5 py-1 rounded-xl border border-teal-200 tabular-nums shadow-2xs inline-block">
+                        ⭐ {weeklyTotalPoints} / 40 (أسبوعي)
+                      </span>
+                      <span className="text-[11px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200/80 tabular-nums">
+                        الرصيد التراكمي: ⭐ {student.currentPoints} ن
                       </span>
                     </div>
                   </div>

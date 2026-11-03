@@ -56,7 +56,20 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
   const [formBirthPlace, setFormBirthPlace] = useState('');
   const [formSchoolName, setFormSchoolName] = useState('');
   const [formEducationalLevel, setFormEducationalLevel] = useState('');
-  const [formAddress, setFormAddress] = useState('');
+  
+  const parseAddress = (addr?: string) => {
+    if (!addr) return { city: '', district: '', street: '' };
+    const parts = addr.split(/\s*[-–—]\s*/);
+    return {
+      city: parts[0] || '',
+      district: parts[1] || '',
+      street: parts.slice(2).join(' - ') || '',
+    };
+  };
+
+  const [formAddressCity, setFormAddressCity] = useState('');
+  const [formAddressDistrict, setFormAddressDistrict] = useState('');
+  const [formAddressStreet, setFormAddressStreet] = useState('');
   const [formGuardianName, setFormGuardianName] = useState('');
   const [formGuardianRelation, setFormGuardianRelation] = useState('');
   const [formGuardianPhone, setFormGuardianPhone] = useState('');
@@ -79,7 +92,9 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
     setFormBirthPlace('');
     setFormSchoolName('');
     setFormEducationalLevel('');
-    setFormAddress('');
+    setFormAddressCity('');
+    setFormAddressDistrict('');
+    setFormAddressStreet('');
     setFormGuardianName('');
     setFormGuardianRelation('');
     setFormGuardianPhone('');
@@ -100,7 +115,10 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
     setFormBirthPlace(s.birthPlace || '');
     setFormSchoolName(s.schoolName || '');
     setFormEducationalLevel(s.educationalLevel || '');
-    setFormAddress(s.address || '');
+    const addrParts = parseAddress(s.address);
+    setFormAddressCity(addrParts.city);
+    setFormAddressDistrict(addrParts.district);
+    setFormAddressStreet(addrParts.street);
     setFormGuardianName(s.guardianName || '');
     setFormGuardianRelation(s.guardianRelation || '');
     setFormGuardianPhone(s.guardianPhone || s.parentPhone || '');
@@ -114,6 +132,14 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
       showToast('الرجاء إدخال اسم الطالب', 'error');
       return;
     }
+
+    const compiledAddress = [
+      formAddressCity.trim(),
+      formAddressDistrict.trim(),
+      formAddressStreet.trim(),
+    ]
+      .filter(Boolean)
+      .join(' - ');
 
     if (editingStudent) {
       // Edit
@@ -130,12 +156,12 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
         age: formComputedAge ?? editingStudent.age,
         schoolName: formSchoolName.trim(),
         educationalLevel: formEducationalLevel.trim(),
-        address: formAddress.trim(),
+        address: compiledAddress,
         guardianName: formGuardianName.trim(),
         guardianRelation: formGuardianRelation.trim(),
         guardianPhone: formGuardianPhone.trim(),
         parentPhone: formGuardianPhone.trim(),
-        phone: formPhone.trim() || undefined,
+        phone: formPhone.trim() || '',
         profileCompleted: formProfileCompleted,
       };
       const res = repository.saveStudent(updated, adminUser);
@@ -158,15 +184,15 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
         nationality: formNationality.trim(),
         birthDate: formBirthDate,
         birthPlace: formBirthPlace.trim(),
-        age: formComputedAge ?? undefined,
+        age: formComputedAge ?? 0,
         schoolName: formSchoolName.trim(),
         educationalLevel: formEducationalLevel.trim(),
-        address: formAddress.trim(),
+        address: compiledAddress,
         guardianName: formGuardianName.trim(),
         guardianRelation: formGuardianRelation.trim(),
         guardianPhone: formGuardianPhone.trim(),
         parentPhone: formGuardianPhone.trim(),
-        phone: formPhone.trim() || undefined,
+        phone: formPhone.trim() || '',
         profileCompleted: formProfileCompleted,
         lastActivityDate: new Date().toISOString().split('T')[0],
         consecutiveAbsences: 0,
@@ -697,14 +723,41 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">عنوان الطالب (المدينة - الحي)</label>
-                  <input
-                    type="text"
-                    value={formAddress}
-                    onChange={(e) => setFormAddress(e.target.value)}
-                    placeholder="مثال: جدة - حي الروضة"
-                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white"
-                  />
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    عنوان الطالب
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-100/70 p-2 rounded-xl border border-slate-200">
+                    <div>
+                      <span className="block text-[10px] font-bold text-slate-500 mb-0.5">1. المدينة</span>
+                      <input
+                        type="text"
+                        value={formAddressCity}
+                        onChange={(e) => setFormAddressCity(e.target.value)}
+                        placeholder="مثال: جدة"
+                        className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-white"
+                      />
+                    </div>
+                    <div>
+                      <span className="block text-[10px] font-bold text-slate-500 mb-0.5">2. الحي</span>
+                      <input
+                        type="text"
+                        value={formAddressDistrict}
+                        onChange={(e) => setFormAddressDistrict(e.target.value)}
+                        placeholder="مثال: حي الروضة"
+                        className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-white"
+                      />
+                    </div>
+                    <div>
+                      <span className="block text-[10px] font-bold text-slate-500 mb-0.5">3. الشارع</span>
+                      <input
+                        type="text"
+                        value={formAddressStreet}
+                        onChange={(e) => setFormAddressStreet(e.target.value)}
+                        placeholder="مثال: شارع صاري"
+                        className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-white"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 

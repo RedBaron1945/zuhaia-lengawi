@@ -40,8 +40,9 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
   const student = (studentId ? repository.getStudentById(studentId) : undefined) || repository.getStudents()[0];
   const circle = student?.circleId ? repository.getCircleById(student.circleId) : null;
   const allTransactions = student ? repository.getTransactions({ studentId: student.id }) : [];
-  const dailyGroups = groupTransactionsByDay(allTransactions);
-  const recentDays = dailyGroups.slice(0, 3);
+  const allEvaluations = student ? repository.getEvaluationsHistory(student.id) : [];
+  const dailyGroups = groupTransactionsByDay(allTransactions, allEvaluations);
+  const recentDays = dailyGroups.slice(0, 5);
 
   // Helper for relative date display (اليوم / أمس / تاريخ)
   const formatRelativeDate = (dateString?: string) => {
@@ -134,18 +135,8 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                   </div>
                 </div>
 
-                {/* Profile Data completion status */}
-                {student.profileCompleted ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowProfileModal(true)}
-                    className="text-[10px] font-bold px-2 py-1 rounded-xl bg-white/15 hover:bg-white/25 text-teal-100 flex items-center gap-1 transition-colors cursor-pointer"
-                    title="مراجعة وتعديل بياناتي"
-                  >
-                    <span>بياناتي المسجلة</span>
-                    <span className="text-emerald-300">✓</span>
-                  </button>
-                ) : (
+                {/* Profile Data prompt if uncompleted */}
+                {!student.profileCompleted && (
                   <button
                     type="button"
                     onClick={() => setShowProfileModal(true)}
@@ -158,18 +149,18 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                 )}
               </div>
 
-              {/* Points Display: shortened to «رصيدك», smaller star, and ⓘ points explanation link */}
+              {/* Points Display: Cumulative balance with clear badge and ⓘ points explanation link */}
               <div className="my-4 text-center py-2">
                 <div className="flex items-center justify-center gap-1.5 mb-1">
-                  <span className="text-xs font-bold text-teal-200 tracking-wide">
-                    رصيدك
+                  <span className="text-xs font-black text-amber-300 tracking-wide">
+                    الرصيد التراكمي الإجمالي
                   </span>
                   <button
                     type="button"
                     onClick={() => setShowPointsModal(true)}
                     className="w-5 h-5 rounded-full bg-white/15 hover:bg-white/25 text-teal-100 hover:text-white flex items-center justify-center text-[11px] font-bold transition-colors cursor-pointer"
-                    title="شرح احتساب النقاط"
-                    aria-label="شرح احتساب النقاط"
+                    title="شرح احتساب النقاط التراكمية"
+                    aria-label="شرح احتساب النقاط التراكمية"
                   >
                     ⓘ
                   </button>
@@ -181,6 +172,11 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                   </span>
                   <span className="text-base sm:text-lg font-bold text-teal-200 mr-1 self-end mb-2">
                     نقطة
+                  </span>
+                </div>
+                <div className="mt-1">
+                  <span className="inline-block text-[11px] text-teal-100 font-bold bg-white/15 px-3 py-1 rounded-full border border-white/20">
+                    تراكمي لجميع الأيام الماضية والحالية
                   </span>
                 </div>
               </div>
@@ -199,7 +195,7 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                   onClick={() => setActiveTab('history')}
                   className="min-h-[44px] rounded-xl border-2 border-white/80 bg-white/10 hover:bg-white/20 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs active:scale-[0.98] transition-all cursor-pointer"
                 >
-                  <span>عرض سجلي</span>
+                  <span>سجل الأيام الماضية</span>
                   <ArrowLeft className="w-4 h-4" />
                 </button>
               </div>
@@ -209,15 +205,20 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
           {/* Recent Point Operations: daily consolidated view, concise summary, larger numbers */}
           <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-amber-500" />
-                آخر عمليات النقاط
-              </h3>
+              <div>
+                <h3 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-amber-500" />
+                  سجل النقاط للأيام السابقة
+                </h3>
+                <p className="text-[10px] text-slate-400 font-medium">
+                  عرض تراكمي يوضح رصيد كل يوم ومجموع الرصيد الكلي
+                </p>
+              </div>
               {/* 44px Touch Target for 'عرض الكل' */}
               <button
                 onClick={() => setActiveTab('history')}
                 className="min-h-[44px] px-2 text-xs font-bold text-teal-700 hover:text-teal-900 inline-flex items-center gap-1 cursor-pointer"
-                aria-label="عرض سجل النقاط"
+                aria-label="عرض سجل النقاط كاملاً"
               >
                 <span>عرض الكل</span>
                 <ChevronLeft className="w-4 h-4" />
@@ -236,7 +237,7 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                     onClick={() => setActiveTab('history')}
                     className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50/70 hover:bg-teal-50/40 border border-slate-100 hover:border-teal-200 text-xs transition-colors cursor-pointer"
                   >
-                    <div className="flex flex-col gap-0.5 max-w-[70%]">
+                    <div className="flex flex-col gap-0.5 max-w-[65%]">
                       <div className="flex items-center gap-1.5">
                         <span className="font-bold text-slate-800">
                           {day.dayLabel === 'اليوم'
@@ -257,14 +258,19 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      <span
-                        dir="ltr"
-                        className={`text-base font-black tabular-nums ${
-                          day.totalPoints > 0 ? 'text-emerald-600' : 'text-rose-600'
-                        }`}
-                      >
-                        {day.totalPoints > 0 ? `+${day.totalPoints}` : day.totalPoints}
-                      </span>
+                      <div className="flex flex-col items-end">
+                        <span
+                          dir="ltr"
+                          className={`text-sm sm:text-base font-black tabular-nums leading-tight ${
+                            day.totalPoints > 0 ? 'text-emerald-600' : 'text-rose-600'
+                          }`}
+                        >
+                          {day.totalPoints > 0 ? `+${day.totalPoints}` : day.totalPoints}
+                        </span>
+                        <span className="text-[10px] font-bold text-teal-800 bg-teal-50 px-1.5 py-0.5 rounded-md border border-teal-200/80 tabular-nums mt-0.5">
+                          التراكمي: {day.cumulativePointsSoFar} ن
+                        </span>
+                      </div>
                       <ChevronLeft className="w-3.5 h-3.5 text-slate-400" />
                     </div>
                   </div>

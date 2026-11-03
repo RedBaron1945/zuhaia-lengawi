@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { User, Circle, Student, Teacher } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
@@ -27,6 +27,7 @@ import {
   UserX,
 } from 'lucide-react';
 import logoZuhaia from '../../assets/logo-zuhaia-transparent.png';
+import { FirestoreStatusBadge } from '../common/FirestoreStatusBadge';
 
 interface TeacherViewProps {
   currentUser: User;
@@ -78,20 +79,27 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   );
   const weekDays = getCircleDaysOfWeek(currentWeekStart);
 
-  // Selected Circle object
-  const selectedCircle =
-    circles.find((c) => c.id === selectedCircleId) ||
-    circles[0] || {
-      id: 'circle_othman',
-      name: 'حلقة عثمان بن عفّان',
-      teacherName: 'سيد نقيب الله',
-      teacherId: 'rJeGonuG4IW2tPIOREi8E6dR6mq1',
-      schedule: 'الأحد إلى الأربعاء (بعد العصر)',
-      studentCount: 23,
-      room: 'جامع زهية لنجاوي - ركن عثمان بن عفان',
-    };
+  const [tick, setTick] = useState(0);
 
-  const allCircleStudents: Student[] = repository.getStudents().filter((s: Student) => s.circleId === selectedCircle.id);
+  // Selected Circle object
+  const selectedCircle = useMemo(() => {
+    return (
+      circles.find((c) => c.id === selectedCircleId) ||
+      circles[0] || {
+        id: 'circle_othman',
+        name: 'حلقة عثمان بن عفّان',
+        teacherName: 'سيد نقيب الله',
+        teacherId: 'rJeGonuG4IW2tPIOREi8E6dR6mq1',
+        schedule: 'الأحد إلى الأربعاء (بعد العصر)',
+        studentCount: 23,
+        room: 'جامع زهية لنجاوي - ركن عثمان بن عفان',
+      }
+    );
+  }, [circles, selectedCircleId]);
+
+  const allCircleStudents: Student[] = useMemo(() => {
+    return repository.getStudents().filter((s: Student) => s.circleId === selectedCircle.id);
+  }, [selectedCircle.id, tick]);
 
   // Auto-open target date on load
   const getInitialDate = (days: WeekDayInfo[], circleId: string, students: Student[]) => {
@@ -114,12 +122,11 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   };
 
   const [selectedDate, setSelectedDate] = useState<string>(() =>
-    getInitialDate(weekDays, selectedCircle.id, allCircleStudents)
+    getInitialDate(weekDays, selectedCircle.id, repository.getStudents().filter((s: Student) => s.circleId === selectedCircle.id))
   );
 
   const [activeTab, setActiveTab] = useState<'daily' | 'weekly_summary' | 'students_list'>('daily');
   const [searchQuery, setSearchQuery] = useState('');
-  const [, setTick] = useState(0);
 
   // Cards are collapsed (null) by default. The selected student card can be folded anytime by tapping it again.
   const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
@@ -444,17 +451,21 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
             </div>
           </div>
 
-          {/* Menu button */}
-          <div className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowHeaderMenu(!showHeaderMenu)}
-              className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 flex items-center justify-center border border-slate-200 transition-colors cursor-pointer"
-              title="القائمة"
-              aria-label="القائمة"
-            >
-              <MoreVertical className="w-4 h-4" />
-            </button>
+          {/* Top Actions: Live Firestore Status Badge + Menu */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <FirestoreStatusBadge compact />
+
+            {/* Menu button */}
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowHeaderMenu(!showHeaderMenu)}
+                className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 flex items-center justify-center border border-slate-200 transition-colors cursor-pointer"
+                title="القائمة"
+                aria-label="القائمة"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
 
             {showHeaderMenu && (
               <div className="absolute left-0 top-full mt-2 w-52 bg-white rounded-2xl shadow-xl border border-slate-200 p-2 z-50 animate-fade-in text-xs space-y-1">
@@ -517,6 +528,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
                 </button>
               </div>
             )}
+            </div>
           </div>
         </div>
 

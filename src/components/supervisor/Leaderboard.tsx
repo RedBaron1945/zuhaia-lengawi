@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
-import { Search, Filter, Check, X } from 'lucide-react';
+import { Search, Filter, Check, X, UserCheck, UserX } from 'lucide-react';
 
 interface LeaderboardProps {
   students: Student[];
@@ -174,66 +174,96 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ students }) => {
       </div>
 
       {/* Top 3 Podium Highlights: 3 Equal Width Columns without text clipping */}
-      {showPodium && (
-        <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 w-full pt-2 pb-1 items-end">
-          {/* Rank 2 (Right side in RTL) */}
-          <div className="w-full min-w-0 bg-white rounded-2xl p-2.5 sm:p-3 border border-slate-200/90 text-center flex flex-col items-center justify-end shadow-2xs h-36">
-            <span className="text-2xl mb-1 shrink-0">🥈</span>
-            <span className="text-xs font-bold text-slate-900 truncate w-full text-center">
-              {sortedStudents[1].name}
-            </span>
-            {circles.find((c) => c.id === sortedStudents[1].circleId)?.name && (
-              <span className="text-[10px] text-slate-500 truncate w-full text-center mt-0.5">
-                {circles.find((c) => c.id === sortedStudents[1].circleId)?.name}
-              </span>
-            )}
-            <div className="mt-1.5 bg-slate-50 px-2 py-0.5 rounded-lg border border-slate-200/70 w-full text-center">
-              <span className="text-xs font-black text-teal-800 tabular-nums">
-                ⭐ {sortedStudents[1].currentPoints}
-              </span>
-            </div>
-          </div>
+      {showPodium && (() => {
+        const stats0 = repository.getStudentAttendanceStats(sortedStudents[0].id);
+        const stats1 = repository.getStudentAttendanceStats(sortedStudents[1].id);
+        const stats2 = repository.getStudentAttendanceStats(sortedStudents[2].id);
 
-          {/* Rank 1 (Tallest, Center) */}
-          <div className="w-full min-w-0 bg-gradient-to-b from-amber-50/90 to-white rounded-2xl p-2.5 sm:p-3 border-2 border-amber-300 text-center flex flex-col items-center justify-end shadow-xs h-42">
-            <span className="text-3xl mb-1 shrink-0">🥇</span>
-            <span className="text-xs sm:text-sm font-black text-slate-900 truncate w-full text-center">
-              {sortedStudents[0].name}
-            </span>
-            {circles.find((c) => c.id === sortedStudents[0].circleId)?.name && (
-              <span className="text-[10px] text-amber-800 font-semibold truncate w-full text-center mt-0.5">
-                {circles.find((c) => c.id === sortedStudents[0].circleId)?.name}
+        return (
+          <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 w-full pt-2 pb-1 items-end">
+            {/* Rank 2 (Right side in RTL) */}
+            <div className="w-full min-w-0 bg-white rounded-2xl p-2.5 sm:p-3 border border-slate-200/90 text-center flex flex-col items-center justify-end shadow-2xs h-40">
+              <span className="text-2xl mb-0.5 shrink-0">🥈</span>
+              <span className="text-xs font-bold text-slate-900 truncate w-full text-center">
+                {sortedStudents[1].name}
               </span>
-            )}
-            <div className="mt-1.5 bg-amber-100/80 px-2 py-0.5 rounded-lg border border-amber-200 w-full text-center">
-              <span className="text-xs sm:text-sm font-black text-amber-800 tabular-nums">
-                ⭐ {sortedStudents[0].currentPoints}
-              </span>
+              {circles.find((c) => c.id === sortedStudents[1].circleId)?.name && (
+                <span className="text-[10px] text-slate-500 truncate w-full text-center mt-0.5">
+                  {circles.find((c) => c.id === sortedStudents[1].circleId)?.name}
+                </span>
+              )}
+              <div className="flex items-center justify-center gap-1 mt-1 text-[10px] font-bold">
+                <span className="text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">
+                  ح {stats1.presentDays}
+                </span>
+                <span className="text-rose-700 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">
+                  غ {stats1.absentDays}
+                </span>
+              </div>
+              <div className="mt-1 bg-slate-50 px-2 py-0.5 rounded-lg border border-slate-200/70 w-full text-center">
+                <span className="text-xs font-black text-teal-800 tabular-nums">
+                  ⭐ {sortedStudents[1].currentPoints}
+                </span>
+              </div>
             </div>
-            <span className="text-[9px] text-amber-900 font-extrabold bg-amber-200/70 px-1.5 py-0.2 rounded-full mt-1 shrink-0">
-              متصدر الحلقات
-            </span>
-          </div>
 
-          {/* Rank 3 (Left side in RTL) */}
-          <div className="w-full min-w-0 bg-white rounded-2xl p-2.5 sm:p-3 border border-slate-200/90 text-center flex flex-col items-center justify-end shadow-2xs h-32">
-            <span className="text-2xl mb-1 shrink-0">🥉</span>
-            <span className="text-xs font-bold text-slate-900 truncate w-full text-center">
-              {sortedStudents[2].name}
-            </span>
-            {circles.find((c) => c.id === sortedStudents[2].circleId)?.name && (
-              <span className="text-[10px] text-slate-500 truncate w-full text-center mt-0.5">
-                {circles.find((c) => c.id === sortedStudents[2].circleId)?.name}
+            {/* Rank 1 (Tallest, Center) */}
+            <div className="w-full min-w-0 bg-gradient-to-b from-amber-50/90 to-white rounded-2xl p-2.5 sm:p-3 border-2 border-amber-300 text-center flex flex-col items-center justify-end shadow-xs h-46">
+              <span className="text-3xl mb-0.5 shrink-0">🥇</span>
+              <span className="text-xs sm:text-sm font-black text-slate-900 truncate w-full text-center">
+                {sortedStudents[0].name}
               </span>
-            )}
-            <div className="mt-1.5 bg-slate-50 px-2 py-0.5 rounded-lg border border-slate-200/70 w-full text-center">
-              <span className="text-xs font-black text-teal-800 tabular-nums">
-                ⭐ {sortedStudents[2].currentPoints}
+              {circles.find((c) => c.id === sortedStudents[0].circleId)?.name && (
+                <span className="text-[10px] text-amber-800 font-semibold truncate w-full text-center mt-0.5">
+                  {circles.find((c) => c.id === sortedStudents[0].circleId)?.name}
+                </span>
+              )}
+              <div className="flex items-center justify-center gap-1 mt-1 text-[10px] font-bold">
+                <span className="text-emerald-800 bg-emerald-100/80 px-1 py-0.2 rounded border border-emerald-300">
+                  ح {stats0.presentDays}
+                </span>
+                <span className="text-rose-800 bg-rose-100/80 px-1 py-0.2 rounded border border-rose-300">
+                  غ {stats0.absentDays}
+                </span>
+              </div>
+              <div className="mt-1 bg-amber-100/80 px-2 py-0.5 rounded-lg border border-amber-200 w-full text-center">
+                <span className="text-xs sm:text-sm font-black text-amber-800 tabular-nums">
+                  ⭐ {sortedStudents[0].currentPoints}
+                </span>
+              </div>
+              <span className="text-[9px] text-amber-900 font-extrabold bg-amber-200/70 px-1.5 py-0.2 rounded-full mt-1 shrink-0">
+                متصدر الحلقات
               </span>
             </div>
+
+            {/* Rank 3 (Left side in RTL) */}
+            <div className="w-full min-w-0 bg-white rounded-2xl p-2.5 sm:p-3 border border-slate-200/90 text-center flex flex-col items-center justify-end shadow-2xs h-36">
+              <span className="text-2xl mb-0.5 shrink-0">🥉</span>
+              <span className="text-xs font-bold text-slate-900 truncate w-full text-center">
+                {sortedStudents[2].name}
+              </span>
+              {circles.find((c) => c.id === sortedStudents[2].circleId)?.name && (
+                <span className="text-[10px] text-slate-500 truncate w-full text-center mt-0.5">
+                  {circles.find((c) => c.id === sortedStudents[2].circleId)?.name}
+                </span>
+              )}
+              <div className="flex items-center justify-center gap-1 mt-1 text-[10px] font-bold">
+                <span className="text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">
+                  ح {stats2.presentDays}
+                </span>
+                <span className="text-rose-700 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">
+                  غ {stats2.absentDays}
+                </span>
+              </div>
+              <div className="mt-1 bg-slate-50 px-2 py-0.5 rounded-lg border border-slate-200/70 w-full text-center">
+                <span className="text-xs font-black text-teal-800 tabular-nums">
+                  ⭐ {sortedStudents[2].currentPoints}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Leaderboard list: Starts from 4th place when podium is shown */}
       <div className="bg-white rounded-2xl border border-slate-200/90 divide-y divide-slate-100 overflow-hidden shadow-2xs">
@@ -246,6 +276,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ students }) => {
             const currentRank = rankOffset + idx;
             const circle = circles.find((c) => c.id === student.circleId);
             const circleName = circle ? circle.name : '';
+            const attStats = repository.getStudentAttendanceStats(student.id);
 
             return (
               <div
@@ -261,7 +292,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ students }) => {
                     <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 truncate">
                       {student.name}
                     </h4>
-                    {/* Circle Name Only */}
+                    {/* Circle Name */}
                     {circleName && (
                       <div className="text-[11px] font-bold text-teal-800 mt-0.5 truncate">
                         {circleName}
@@ -270,8 +301,33 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ students }) => {
                   </div>
                 </div>
 
-                {/* Points Only */}
-                <div className="text-left shrink-0">
+                {/* Attendance Days & Absence Days Badges + Points */}
+                <div className="text-left shrink-0 flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-black tabular-nums shadow-2xs"
+                      title="عدد أيام الحضور"
+                    >
+                      <UserCheck className="w-3 h-3 text-emerald-600" />
+                      <span>ح {attStats.presentDays}</span>
+                    </span>
+                    <span
+                      className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-lg text-[11px] font-black tabular-nums shadow-2xs border ${
+                        attStats.absentDays > 0
+                          ? 'bg-rose-50 text-rose-800 border-rose-200'
+                          : 'bg-slate-50 text-slate-600 border-slate-200'
+                      }`}
+                      title="عدد أيام الغياب"
+                    >
+                      <UserX
+                        className={`w-3 h-3 ${
+                          attStats.absentDays > 0 ? 'text-rose-600' : 'text-slate-400'
+                        }`}
+                      />
+                      <span>غ {attStats.absentDays}</span>
+                    </span>
+                  </div>
+
                   <span className="text-xs sm:text-sm font-black text-teal-900 tabular-nums block">
                     ⭐ {student.currentPoints}
                   </span>

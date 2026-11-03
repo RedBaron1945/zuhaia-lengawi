@@ -1,0 +1,129 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // الدوال المساعدة للتحقق من الصلاحيات
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // المشرف العام
+    function isSupervisor() {
+      return isAuthenticated() && (
+        request.auth.uid == 'Z3GsAoWaFqYu6uLl1bVRNoCD5mE2' ||
+        request.auth.token.role == 'supervisor' ||
+        request.auth.token.role == 'admin'
+      );
+    }
+
+    // الدعم الفني
+    function isTechSupport() {
+      return isAuthenticated() && (
+        request.auth.uid == 'rT1eeIfKODWHcFjgIPokVbCEPbB2' ||
+        request.auth.token.role == 'tech_support'
+      );
+    }
+
+    // المعلمون الرسميون
+    function isTeacher() {
+      return isAuthenticated() && (
+        request.auth.uid in [
+          'a1Mc0gxwTJeBTs0znMfT717Mzvv1',
+          'JnW6yM01vfMnh8UjreoTUHLKHnU2',
+          'WWVi2QabthStDpdm98uRSxw45nT2',
+          'fDKk692XXCaLq03UYWIXylIl9nF2',
+          '6WsRaB2l2EY0qxNIZnsSjXjJ1B52',
+          'Ly4inOQiNaNKYdXrrSolOWaXPvj1',
+          'fA0XLmpV0jUEksBx325dq2axUT42',
+          'NSmjSrHJZ6Ozr23TgdRms2qvPI32',
+          '5R1cPXjKJ9XHNBFVmoEJdAh2Wu33'
+        ] ||
+        request.auth.token.role == 'teacher'
+      );
+    }
+
+    // فريق العمل (مشرف / دعم فني / معلم)
+    function isStaff() {
+      return isSupervisor() || isTechSupport() || isTeacher();
+    }
+
+    // 1. سجلات وبيانات الطلاب
+    match /students/{studentId} {
+      allow read: if isAuthenticated();
+      // يحق للمشرف والمعلم التعديل، كما يحق للطالب تعبئة وتعديل بياناته الشخصية
+      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == studentId);
+    }
+
+    // 2. الحلقات القرآنية
+    match /circles/{circleId} {
+      allow read: if isAuthenticated();
+      allow write: if isSupervisor() || isTechSupport();
+    }
+
+    // 3. المعلمون
+    match /teachers/{teacherId} {
+      allow read: if isAuthenticated();
+      allow write: if isSupervisor() || isTechSupport();
+    }
+
+    // 4. التقييم اليومي (المعايير الخمسة)
+    match /evaluations/{evalId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    // 5. سجل عمليات النقاط
+    match /transactions/{transactionId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    // 6. التحضير والغياب
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    // 7. متجر الجوائز
+    match /rewards/{rewardId} {
+      allow read: if isAuthenticated();
+      allow write: if isSupervisor() || isTechSupport();
+    }
+
+    // 8. طلبات استبدال الجوائز
+    match /redemptions/{redemptionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isStaff();
+    }
+
+    // 9. قواعد واحتساب النقاط
+    match /rules/{ruleId} {
+      allow read: if isAuthenticated();
+      allow write: if isSupervisor() || isTechSupport();
+    }
+
+    // 10. سجل العمليات والرقابة (غير قابل للتعديل أو الحذف)
+    match /audit_logs/{logId} {
+      allow read: if isSupervisor() || isTechSupport();
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    // 11. المستخدمون: كل شخص يقرأ مستند حسابه، ولا يستطيع تغيير دوره بنفسه
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isSupervisor() || isTechSupport());
+      allow create: if isAuthenticated() && request.auth.uid == userId
+                    && request.resource.data.role in ['student', 'teacher']
+                    && !(request.resource.data.role == 'teacher' && !isTeacher());
+      allow update: if isSupervisor() || isTechSupport()
+                    || (request.auth.uid == userId && request.resource.data.role == resource.data.role);
+      allow delete: if isSupervisor() || isTechSupport();
+    }
+
+    // إغلاق أي مسارات أخرى غير محددة
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

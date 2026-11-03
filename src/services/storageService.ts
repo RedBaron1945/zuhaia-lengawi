@@ -34,6 +34,8 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot,
+  getDoc,
+  onSnapshotsInSync,
 } from 'firebase/firestore';
 
 const STORAGE_KEYS = {
@@ -74,6 +76,72 @@ try {
   // Ignore in non-browser or sandbox environments
 }
 
+// Sync status types and reactive listener for connection health
+export type FirestoreSyncStatus = 'connected' | 'syncing' | 'offline' | 'error';
+
+export interface SyncStatusInfo {
+  status: FirestoreSyncStatus;
+  lastUpdated: Date | null;
+  pendingWritesCount: number;
+  isOnline: boolean;
+  isCached: boolean;
+  errorMessage?: string;
+}
+
+type SyncStatusListener = (info: SyncStatusInfo) => void;
+const syncStatusListeners: Set<SyncStatusListener> = new Set();
+
+let currentSyncStatus: SyncStatusInfo = {
+  status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'connected',
+  lastUpdated: new Date(),
+  pendingWritesCount: 0,
+  isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+  isCached: true,
+};
+
+export const getSyncStatus = (): SyncStatusInfo => ({ ...currentSyncStatus });
+
+export const subscribeToSyncStatus = (callback: SyncStatusListener) => {
+  syncStatusListeners.add(callback);
+  // Defer initial delivery to guarantee it does not execute synchronously inside a render cycle
+  setTimeout(() => {
+    if (syncStatusListeners.has(callback)) {
+      try {
+        callback(getSyncStatus());
+      } catch (e) {
+        console.error('Error in initial sync status callback:', e);
+      }
+    }
+  }, 0);
+  return () => {
+    syncStatusListeners.delete(callback);
+  };
+};
+
+export const updateSyncState = (partial: Partial<SyncStatusInfo>) => {
+  currentSyncStatus = { ...currentSyncStatus, ...partial };
+  // Defer notification with setTimeout(..., 0) so no component receives a setState while another component is rendering
+  setTimeout(() => {
+    syncStatusListeners.forEach((cb) => {
+      try {
+        cb(currentSyncStatus);
+      } catch (e) {
+        console.error('Error notifying sync listener:', e);
+      }
+    });
+  }, 0);
+};
+
+// Monitor online / offline network state
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    updateSyncState({ isOnline: true, status: 'syncing' });
+  });
+  window.addEventListener('offline', () => {
+    updateSyncState({ isOnline: false, status: 'offline' });
+  });
+}
+
 // Event listener type for reactive updates across components
 type StateChangeListener = () => void;
 const listeners: Set<StateChangeListener> = new Set();
@@ -85,14 +153,24 @@ export const subscribeToDataChanges = (callback: StateChangeListener) => {
   };
 };
 
+let debounceTimer: any = null;
+const debouncedNotifySubscribers = () => {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    notifySubscribers();
+  }, 40);
+};
+
 const notifySubscribers = () => {
-  listeners.forEach((listener) => {
-    try {
-      listener();
-    } catch (e) {
-      console.error('Error in subscriber callback:', e);
-    }
-  });
+  setTimeout(() => {
+    listeners.forEach((listener) => {
+      try {
+        listener();
+      } catch (e) {
+        console.error('Error in subscriber callback:', e);
+      }
+    });
+  }, 0);
 };
 
 // Helpers for localStorage
@@ -115,30 +193,94 @@ function saveItem<T>(key: string, data: T): void {
   }
 }
 
+// Helper to strip undefined values so Firestore setDoc never throws Unsupported field value: undefined
+function sanitizeForFirestore<T>(data: T): Record<string, any> {
+  return JSON.parse(JSON.stringify(data));
+}
+
+// In-memory cache of synced items to eliminate redundant writes and downstream read cycles
+const syncedHashes = new Map<string, string>();
+
 // Asynchronous Firestore Sync Helpers
 async function syncToFirestore<T extends { id: string }>(collectionName: string, item: T) {
   try {
     if (!item?.id) return;
-    // Only attempt Firestore write if a user is actively authenticated
-    if (!auth.currentUser) return;
-    await setDoc(doc(db, collectionName, item.id), item, { merge: true });
-  } catch (err: any) {
-    if (err?.code === 'permission-denied') {
-      return; // Remote rules restricted write; local store remains authoritative
+    const docKey = `${collectionName}_${item.id}`;
+    const sanitized = sanitizeForFirestore(item);
+    const serialized = JSON.stringify(sanitized);
+    if (syncedHashes.get(docKey) === serialized) {
+      // Data hasn't changed; avoid duplicate write & read triggers
+      return;
     }
+
+    updateSyncState({
+      status: 'syncing',
+      pendingWritesCount: currentSyncStatus.pendingWritesCount + 1,
+    });
+
+    await setDoc(doc(db, collectionName, item.id), sanitized, { merge: true });
+    syncedHashes.set(docKey, serialized);
+
+    updateSyncState({
+      status: 'connected',
+      lastUpdated: new Date(),
+      pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+      errorMessage: undefined,
+    });
+  } catch (err: any) {
     console.warn(`Firestore sync notice on '${collectionName}':`, err?.message || err);
+    updateSyncState({
+      status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error',
+      errorMessage: err?.message || 'خطأ في الاتصال بفاير ستور',
+      pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+    });
   }
 }
 
 async function deleteFromFirestore(collectionName: string, id: string) {
   try {
-    if (!id || !auth.currentUser) return;
+    if (!id) return;
+    updateSyncState({
+      status: 'syncing',
+      pendingWritesCount: currentSyncStatus.pendingWritesCount + 1,
+    });
+
     await deleteDoc(doc(db, collectionName, id));
+    syncedHashes.delete(`${collectionName}_${id}`);
+
+    updateSyncState({
+      status: 'connected',
+      lastUpdated: new Date(),
+      pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+      errorMessage: undefined,
+    });
   } catch (err: any) {
-    if (err?.code === 'permission-denied') return;
     console.warn(`Firestore delete notice on '${collectionName}':`, err?.message || err);
+    updateSyncState({
+      status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error',
+      errorMessage: err?.message,
+      pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+    });
   }
 }
+
+export const triggerManualSync = async (): Promise<void> => {
+  try {
+    updateSyncState({ status: 'syncing' });
+    await getDoc(doc(db, 'rules', 'default_rules'));
+    updateSyncState({
+      status: 'connected',
+      lastUpdated: new Date(),
+      errorMessage: undefined,
+    });
+  } catch (e: any) {
+    updateSyncState({
+      status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error',
+      errorMessage: e?.message || 'تعذر الاتصال بقاعدة البيانات',
+    });
+    throw e;
+  }
+};
 
 export interface IRepository {
   // Students
@@ -266,6 +408,45 @@ class FirestoreConnectedRepository implements IRepository {
     this.reconcileStudentAttendance();
     this.initFirestoreRealtimeListeners();
     this.recalculateCircleStudentCounts();
+    this.seedInitialDataIfEmpty();
+  }
+
+  private async seedInitialDataIfEmpty() {
+    if (typeof localStorage === 'undefined') return;
+    const SEED_KEY = 'tartil_firestore_seeded_zuhaia_v4';
+    if (localStorage.getItem(SEED_KEY)) return;
+
+    try {
+      const rulesCheck = await getDoc(doc(db, 'rules', 'default_rules'));
+      if (!rulesCheck.exists()) {
+        updateSyncState({ status: 'syncing' });
+        await setDoc(doc(db, 'rules', 'default_rules'), sanitizeForFirestore({ id: 'default_rules', ...INITIAL_POINT_RULES }), { merge: true });
+        for (const c of INITIAL_CIRCLES) {
+          await setDoc(doc(db, 'circles', c.id), sanitizeForFirestore(c), { merge: true });
+        }
+        for (const t of INITIAL_TEACHERS) {
+          await setDoc(doc(db, 'teachers', t.id), sanitizeForFirestore(t), { merge: true });
+        }
+        for (const s of INITIAL_STUDENTS) {
+          await setDoc(doc(db, 'students', s.id), sanitizeForFirestore(s), { merge: true });
+        }
+        for (const r of INITIAL_REWARDS) {
+          await setDoc(doc(db, 'rewards', r.id), sanitizeForFirestore(r), { merge: true });
+        }
+        for (const e of INITIAL_EVALUATIONS) {
+          await setDoc(doc(db, 'evaluations', e.id), sanitizeForFirestore(e), { merge: true });
+        }
+        for (const tx of INITIAL_TRANSACTIONS) {
+          await setDoc(doc(db, 'transactions', tx.id), sanitizeForFirestore(tx), { merge: true });
+        }
+        localStorage.setItem(SEED_KEY, 'true');
+        updateSyncState({ status: 'connected', lastUpdated: new Date() });
+      } else {
+        localStorage.setItem(SEED_KEY, 'true');
+      }
+    } catch (e) {
+      console.warn('Initial Firestore seeding notice:', e);
+    }
   }
 
   /**
@@ -397,22 +578,49 @@ class FirestoreConnectedRepository implements IRepository {
 
   private initFirestoreRealtimeListeners() {
     try {
+      // Global snapshot sync listener to confirm Firestore caught up with remote server
+      onSnapshotsInSync(db, () => {
+        updateSyncState({
+          status: 'connected',
+          lastUpdated: new Date(),
+          isCached: false,
+          errorMessage: undefined,
+        });
+      });
+
       const handleSnapshotError = (col: string) => (error: any) => {
-        if (error?.code === 'permission-denied') return;
+        if (error?.code === 'permission-denied') {
+          updateSyncState({ status: 'error', errorMessage: 'قواعد فاير ستور تمنع القراءة' });
+          return;
+        }
         console.warn(`Firestore onSnapshot (${col}):`, error?.message || error);
+        updateSyncState({
+          status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error',
+          errorMessage: error?.message,
+        });
       };
 
-      // 1. Sync Students from Firestore
+      const recordSnapshotReceived = (fromCache: boolean) => {
+        updateSyncState({
+          status: 'connected',
+          lastUpdated: new Date(),
+          isCached: fromCache,
+          errorMessage: undefined,
+        });
+      };
+
+      // 1. Sync Students from Firestore (Cached in IndexedDB to avoid read quotas)
       onSnapshot(
         collection(db, 'students'),
         (snapshot) => {
+          recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Student[] = [];
             snapshot.forEach((d) => list.push(d.data() as Student));
             saveItem(STORAGE_KEYS.STUDENTS, list);
             this.reconcileStudentPointsFromTransactions();
             this.recalculateCircleStudentCounts();
-            notifySubscribers();
+            debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('students')
@@ -422,11 +630,12 @@ class FirestoreConnectedRepository implements IRepository {
       onSnapshot(
         collection(db, 'circles'),
         (snapshot) => {
+          recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Circle[] = [];
             snapshot.forEach((d) => list.push(d.data() as Circle));
             saveItem(STORAGE_KEYS.CIRCLES, list);
-            notifySubscribers();
+            debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('circles')
@@ -436,11 +645,12 @@ class FirestoreConnectedRepository implements IRepository {
       onSnapshot(
         collection(db, 'teachers'),
         (snapshot) => {
+          recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Teacher[] = [];
             snapshot.forEach((d) => list.push(d.data() as Teacher));
             saveItem(STORAGE_KEYS.TEACHERS, list);
-            notifySubscribers();
+            debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('teachers')
@@ -450,11 +660,12 @@ class FirestoreConnectedRepository implements IRepository {
       onSnapshot(
         collection(db, 'evaluations'),
         (snapshot) => {
+          recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: EvaluationRecord[] = [];
             snapshot.forEach((d) => list.push(d.data() as EvaluationRecord));
             saveItem(STORAGE_KEYS.EVALUATIONS, list);
-            notifySubscribers();
+            debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('evaluations')
@@ -464,12 +675,13 @@ class FirestoreConnectedRepository implements IRepository {
       onSnapshot(
         collection(db, 'transactions'),
         (snapshot) => {
+          recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: PointTransaction[] = [];
             snapshot.forEach((d) => list.push(d.data() as PointTransaction));
             saveItem(STORAGE_KEYS.TRANSACTIONS, list);
             this.reconcileStudentPointsFromTransactions();
-            notifySubscribers();
+            debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('transactions')
@@ -479,11 +691,12 @@ class FirestoreConnectedRepository implements IRepository {
       onSnapshot(
         collection(db, 'rewards'),
         (snapshot) => {
+          recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Reward[] = [];
             snapshot.forEach((d) => list.push(d.data() as Reward));
             saveItem(STORAGE_KEYS.REWARDS, list);
-            notifySubscribers();
+            debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('rewards')
@@ -493,11 +706,12 @@ class FirestoreConnectedRepository implements IRepository {
       onSnapshot(
         collection(db, 'redemptions'),
         (snapshot) => {
+          recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: RedemptionRequest[] = [];
             snapshot.forEach((d) => list.push(d.data() as RedemptionRequest));
             saveItem(STORAGE_KEYS.REDEMPTIONS, list);
-            notifySubscribers();
+            debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('redemptions')
@@ -551,7 +765,9 @@ class FirestoreConnectedRepository implements IRepository {
         if (s.currentPoints !== truePoints) {
           s.currentPoints = truePoints;
           modified = true;
-          syncToFirestore('students', s);
+          setTimeout(() => {
+            syncToFirestore('students', s);
+          }, 50);
         }
       }
     });
@@ -991,12 +1207,29 @@ class FirestoreConnectedRepository implements IRepository {
     // Map each distinct date to status
     const dateStatusMap = new Map<string, 'present' | 'absent' | 'excused'>();
 
-    // Daily evaluations from teachers (standard rubric)
+    // Daily evaluations from teachers (standard rubric: 2 or 1 = present, 0 = absent)
     studentEvals.forEach((e) => {
       if (e.date) {
-        if (e.attendance === 'early' || e.attendance === 'late') {
+        const att = e.attendance;
+        const attPts = typeof e.attendancePoints === 'number' ? e.attendancePoints : undefined;
+        const isPresent =
+          att === 'early' ||
+          att === 'late' ||
+          attPts === 2 ||
+          attPts === 1 ||
+          (att as any) === 2 ||
+          (att as any) === 1 ||
+          (att as any) === '2' ||
+          (att as any) === '1';
+        const isAbsent =
+          att === 'absent' ||
+          attPts === 0 ||
+          (att as any) === 0 ||
+          (att as any) === '0';
+
+        if (isPresent) {
           dateStatusMap.set(e.date, 'present');
-        } else if (e.attendance === 'absent') {
+        } else if (isAbsent) {
           dateStatusMap.set(e.date, 'absent');
         }
       }
@@ -1279,7 +1512,7 @@ class FirestoreConnectedRepository implements IRepository {
       deleteFromFirestore('transactions', t.id);
     });
 
-    if (totalPoints > 0) {
+    if (totalPoints >= 0) {
       const consolidatedTx: PointTransaction = {
         id: oldEvalTxs[0]?.id || `tx_eval_${student.id}_${params.date}`,
         studentId: student.id,
@@ -1694,3 +1927,66 @@ class FirestoreConnectedRepository implements IRepository {
 
 // Singleton repository instance connected to Firebase
 export const repository: IRepository = new FirestoreConnectedRepository();
+
+/**
+ * Helper to determine a student's attendance classification for a specific evaluation record:
+ * - 2 points (or 'early') -> حاضر (+2)
+ * - 1 point (or 'late') -> حاضر (+1)
+ * - 0 points (or 'absent') -> غائب (0)
+ * - No record -> بانتظار الرصد
+ */
+export function getStudentDayAttendance(evalRecord?: EvaluationRecord | null): {
+  status: 'present' | 'absent' | 'not_recorded';
+  points: number | null;
+  label: string;
+  badgeClass: string;
+  detailLabel: string;
+} {
+  if (!evalRecord) {
+    return {
+      status: 'not_recorded',
+      points: null,
+      label: 'بانتظار الرصد',
+      badgeClass: 'bg-slate-100 text-slate-500 border-slate-200 font-bold',
+      detailLabel: 'لم يتم الرصد لهذا اليوم بعد',
+    };
+  }
+
+  const att = evalRecord.attendance;
+  const pts =
+    typeof evalRecord.attendancePoints === 'number'
+      ? evalRecord.attendancePoints
+      : att === 'early' || (att as any) === 2 || (att as any) === '2'
+      ? 2
+      : att === 'late' || (att as any) === 1 || (att as any) === '1'
+      ? 1
+      : 0;
+
+  if (pts === 2 || att === 'early') {
+    return {
+      status: 'present',
+      points: 2,
+      label: 'حاضر (2ن)',
+      badgeClass: 'bg-emerald-50 text-emerald-800 border-emerald-300 font-black',
+      detailLabel: 'حاضر (مبكر - 2 درجات)',
+    };
+  }
+
+  if (pts === 1 || att === 'late') {
+    return {
+      status: 'present',
+      points: 1,
+      label: 'حاضر (1ن)',
+      badgeClass: 'bg-teal-50 text-teal-800 border-teal-300 font-black',
+      detailLabel: 'حاضر (متأخر - 1 درجة)',
+    };
+  }
+
+  return {
+    status: 'absent',
+    points: 0,
+    label: 'غائب (0ن)',
+    badgeClass: 'bg-rose-50 text-rose-800 border-rose-300 font-black',
+    detailLabel: 'غائب (0 درجات)',
+  };
+}

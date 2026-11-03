@@ -2,6 +2,7 @@ import React from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { LogOut } from 'lucide-react';
 import logoZuhaia from '../../assets/logo-zuhaia-transparent.png';
+import { FirestoreStatusBadge } from './FirestoreStatusBadge';
 
 interface HeaderProps {
   onResetData?: () => void;
@@ -26,7 +27,10 @@ export const Header: React.FC<HeaderProps> = () => {
           </span>
         </div>
 
-
+        {/* Zone 2: Live Firestore Connection Status & Last Sync Time */}
+        <div className="flex items-center justify-center shrink-0">
+          <FirestoreStatusBadge />
+        </div>
 
         {/* Zone 3: Logout button */}
         <div className="flex items-center gap-1.5 shrink-0">

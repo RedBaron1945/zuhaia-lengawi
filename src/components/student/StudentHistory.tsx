@@ -10,6 +10,7 @@ import {
   PackageCheck,
   ChevronDown,
   ChevronUp,
+  Sparkles,
 } from 'lucide-react';
 import { formatHijriDate } from '../../utils/dateUtils';
 import { groupTransactionsByDay, DailyPointsGroup } from '../../utils/pointUtils';
@@ -22,9 +23,11 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
   const [activeTab, setActiveTab] = useState<'points' | 'rewards'>('points');
   const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
 
+  const student = repository.getStudentById(studentId);
   const transactions = repository.getTransactions({ studentId });
   const redemptionRequests = repository.getRedemptionRequests({ studentId });
-  const dailyGroups = groupTransactionsByDay(transactions);
+  const evaluations = repository.getEvaluationsHistory(studentId);
+  const dailyGroups = groupTransactionsByDay(transactions, evaluations);
 
   const toggleDayExpanded = (dateKey: string) => {
     setExpandedDays((prev) => ({
@@ -118,6 +121,37 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
       {/* Content */}
       {activeTab === 'points' ? (
         <div className="space-y-3">
+          {/* Main Cumulative Points Balance Banner */}
+          <div className="bg-gradient-to-br from-teal-900 via-teal-800 to-emerald-950 rounded-3xl p-4 sm:p-5 text-white shadow-lg border border-teal-700/50 relative overflow-hidden">
+            <div className="absolute -left-8 -bottom-8 w-36 h-36 rounded-full bg-teal-500/10 pointer-events-none" />
+            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-1.5 text-teal-200 text-xs font-bold mb-1">
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                  <span>الرصيد التراكمي الإجمالي</span>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl sm:text-4xl font-black tracking-tight text-white tabular-nums drop-shadow-sm">
+                    {student?.currentPoints ?? 0}
+                  </span>
+                  <span className="text-sm font-bold text-teal-200">نقطة تراكمية</span>
+                </div>
+                <p className="text-[11px] text-teal-100/90 font-medium mt-1 leading-relaxed">
+                  يُحتسب رصيدك بشكل تراكمي يجمع حصاد الأيام الماضية والحالية (مثلاً: الأحد +5 والأربعاء +10 = 15 نقطة)، وتجد سجل كل يوم بالتفصيل أدناه.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 sm:self-center shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-teal-700/50">
+                <div className="bg-white/10 backdrop-blur-xs rounded-2xl px-3.5 py-2 text-center border border-white/15">
+                  <span className="text-[10px] text-teal-200 block font-semibold">سجل الأيام</span>
+                  <span className="text-base font-black text-white tabular-nums">
+                    {dailyGroups.length} {dailyGroups.length === 1 ? 'يوم' : 'أيام'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {dailyGroups.length === 0 ? (
             <div className="p-8 text-center bg-white rounded-2xl border border-slate-200 text-slate-500">
               لا توجد نقاط مسجلة حتى الآن.
@@ -220,23 +254,33 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
                   {/* (2) Collapsed State Header: Day name + relative, Hijri date in gray below, Total points + chevron */}
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-sm font-black text-slate-900">
-                        {dayTitle}
+                      <div className="text-sm font-black text-slate-900 flex items-center gap-2">
+                        <span>{dayTitle}</span>
+                        {group.isToday && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-100 text-teal-800">
+                            اليوم
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-400 font-medium tabular-nums mt-0.5">
                         {group.hijriDate}
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span
-                        dir="ltr"
-                        className={`text-base sm:text-lg font-black tabular-nums ${getPointsColor(
-                          group.totalPoints
-                        )}`}
-                      >
-                        {formatPoints(group.totalPoints)}
-                      </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex flex-col items-end">
+                        <span
+                          dir="ltr"
+                          className={`text-base sm:text-lg font-black tabular-nums leading-tight ${getPointsColor(
+                            group.totalPoints
+                          )}`}
+                        >
+                          {formatPoints(group.totalPoints)}
+                        </span>
+                        <span className="text-[10px] font-bold text-teal-800 bg-teal-50 px-1.5 py-0.5 rounded-md border border-teal-200/80 tabular-nums mt-0.5">
+                          الرصيد التراكمي: {group.cumulativePointsSoFar} ن
+                        </span>
+                      </div>
                       {isExpanded ? (
                         <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
                       ) : (
@@ -253,6 +297,12 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
                   {/* (3) Expanded State: Two clean sections without nested box frames */}
                   {isExpanded && (
                     <div className="mt-3 pt-3 border-t border-slate-100">
+                      {/* Checkpoint banner showing running cumulative balance */}
+                      <div className="flex items-center justify-between text-xs font-bold bg-teal-50/80 text-teal-950 px-3 py-1.5 rounded-xl border border-teal-200/80 mb-2.5">
+                        <span>الرصيد التراكمي المحقق حتى هذا اليوم:</span>
+                        <span className="font-black tabular-nums">⭐ {group.cumulativePointsSoFar} نقطة</span>
+                      </div>
+
                       {/* Section 1: Daily evaluation out of 10 with 5 criteria rows */}
                       {criteriaList.length > 0 && evalScore !== null && (
                         <div>

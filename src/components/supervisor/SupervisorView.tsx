@@ -194,8 +194,8 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
             activeTab === 'attention' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
-          <AlertTriangle className="w-4 h-4 text-amber-500" />
-          <span>يحتاجون متابعة ({attentionCount})</span>
+          <ShieldCheck className="w-4 h-4 text-emerald-400" />
+          <span>صفحة المتابعة ({attentionCount})</span>
         </button>
       </div>
 

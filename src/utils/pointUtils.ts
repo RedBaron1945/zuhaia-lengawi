@@ -1,4 +1,4 @@
-import { PointTransaction } from '../types';
+import { PointTransaction, EvaluationRecord } from '../types';
 import { getHijriParts, formatISODate, getArabicDayName } from './dateUtils';
 
 export interface DailyPointsChip {
@@ -35,6 +35,7 @@ export interface DailyPointsGroup {
   evaluationBreakdown?: EvaluationCriterionDetail[];
   evaluationTotal?: number;
   additionalTransactions: PointTransaction[];
+  cumulativePointsSoFar: number; // Running cumulative total points up to this day
 }
 
 /**
@@ -153,12 +154,13 @@ export function parseEvaluationBreakdown(reasonText: string): EvaluationCriterio
  * Groups raw point transactions by day so that points earned throughout
  * the day appear as a single consolidated, concise record.
  */
-export function groupTransactionsByDay(transactions: PointTransaction[]): DailyPointsGroup[] {
-  if (!transactions || transactions.length === 0) return [];
-
+export function groupTransactionsByDay(
+  transactions: PointTransaction[],
+  evaluations?: EvaluationRecord[]
+): DailyPointsGroup[] {
   const map = new Map<string, PointTransaction[]>();
 
-  transactions.forEach((tx) => {
+  (transactions || []).forEach((tx) => {
     let key = tx.date;
     if (!key) {
       key = formatISODate(new Date());
@@ -169,6 +171,31 @@ export function groupTransactionsByDay(transactions: PointTransaction[]): DailyP
     list.push(tx);
     map.set(key, list);
   });
+
+  // If evaluation records are provided, guarantee that any evaluated date is present in the map
+  if (evaluations && evaluations.length > 0) {
+    evaluations.forEach((e) => {
+      if (!e.date) return;
+      const key = e.date.includes('T') ? e.date.split('T')[0] : e.date;
+      if (!map.has(key)) {
+        const totalPts = typeof e.totalPoints === 'number' ? e.totalPoints : e.pointsAwarded || 0;
+        const synthTx: PointTransaction = {
+          id: `synth_eval_${e.id || key}`,
+          studentId: e.studentId,
+          studentName: e.studentName || '',
+          amount: totalPts,
+          type: 'memorization',
+          reason: e.notes
+            ? `تقييم يوم ${e.dayName || getArabicDayName(key)} (${key}): ${e.notes}`
+            : `تقييم يوم ${e.dayName || getArabicDayName(key)} (${key})`,
+          date: key,
+          createdBy: e.recordedBy || 'المعلم',
+          createdByRole: 'teacher',
+        };
+        map.set(key, [synthTx]);
+      }
+    });
+  }
 
   const now = new Date();
   const todayKey = formatISODate(now);
@@ -335,10 +362,19 @@ export function groupTransactionsByDay(transactions: PointTransaction[]): DailyP
       evaluationBreakdown,
       evaluationTotal,
       additionalTransactions,
+      cumulativePointsSoFar: 0,
     });
   });
 
-  // Sort newest day first
+  // 1. Sort chronologically (oldest first) to calculate running cumulative balance across days
+  groups.sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+  let runningCumulative = 0;
+  groups.forEach((g) => {
+    runningCumulative += g.totalPoints;
+    g.cumulativePointsSoFar = Math.max(0, runningCumulative);
+  });
+
+  // 2. Sort newest day first for clean timeline display
   groups.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
 
   return groups;

@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 import { calculateAge } from '../../utils/dateUtils';
 import logoZuhaia from '../../assets/logo-zuhaia-transparent.png';
 import {
@@ -17,6 +18,7 @@ import {
   Users,
   ShieldCheck,
   AlertCircle,
+  LogOut,
 } from 'lucide-react';
 
 interface StudentOnboardingModalProps {
@@ -30,6 +32,7 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
   isOpen,
   onComplete,
 }) => {
+  const { logout } = useAuth();
   const { showToast, celebratePoints } = useToast();
 
   // Current step: 0 = Welcome screen, 1 = Personal & ID, 2 = School & Address, 3 = Guardian & Contact
@@ -43,9 +46,36 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
   const [birthPlace, setBirthPlace] = useState(student.birthPlace || '');
   const [schoolName, setSchoolName] = useState(student.schoolName || '');
   const [educationalLevel, setEducationalLevel] = useState(student.educationalLevel || '');
-  const [address, setAddress] = useState(student.address || '');
+  
+  // Helper to parse existing address into 3 parts (المدينة - الحي - الشارع)
+  const parseAddressParts = (addr?: string) => {
+    if (!addr) return { city: '', district: '', street: '' };
+    const parts = addr.split(/\s*[-–—]\s*/);
+    return {
+      city: parts[0] || '',
+      district: parts[1] || '',
+      street: parts.slice(2).join(' - ') || '',
+    };
+  };
+
+  const initialAddr = parseAddressParts(student.address);
+  const [addressCity, setAddressCity] = useState(initialAddr.city);
+  const [addressDistrict, setAddressDistrict] = useState(initialAddr.district);
+  const [addressStreet, setAddressStreet] = useState(initialAddr.street);
   const [guardianName, setGuardianName] = useState(student.guardianName || '');
-  const [guardianRelation, setGuardianRelation] = useState(student.guardianRelation || '');
+  const STANDARD_RELATIONS = useMemo(() => ['أب', 'أم', 'أخ', 'عم'], []);
+  const [selectedRelationType, setSelectedRelationType] = useState<string>(() => {
+    if (!student.guardianRelation) return '';
+    return ['أب', 'أم', 'أخ', 'عم'].includes(student.guardianRelation)
+      ? student.guardianRelation
+      : 'أخرى';
+  });
+  const [customRelation, setCustomRelation] = useState<string>(() => {
+    if (!student.guardianRelation) return '';
+    return ['أب', 'أم', 'أخ', 'عم'].includes(student.guardianRelation)
+      ? ''
+      : student.guardianRelation;
+  });
   const [guardianPhone, setGuardianPhone] = useState(student.guardianPhone || student.parentPhone || '');
   const [phone, setPhone] = useState(student.phone || '');
 
@@ -97,8 +127,8 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
         setErrorMsg('يرجى تحديد المرحلة الدراسية للطالب');
         return false;
       }
-      if (!address.trim()) {
-        setErrorMsg('يرجى كتابة عنوان السكن (المدينة - الحي)');
+      if (!addressCity.trim() && !addressDistrict.trim() && !addressStreet.trim()) {
+        setErrorMsg('يرجى إدخال عنوان الطالب');
         return false;
       }
     }
@@ -106,6 +136,14 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
     if (currentStep === 3) {
       if (!guardianName.trim()) {
         setErrorMsg('يرجى إدخال اسم ولي أمر الطالب');
+        return false;
+      }
+      if (!selectedRelationType) {
+        setErrorMsg('يرجى تحديد صلة القرابة');
+        return false;
+      }
+      if (selectedRelationType === 'أخرى' && !customRelation.trim()) {
+        setErrorMsg('يرجى كتابة صلة القرابة في الخانة المخصصة');
         return false;
       }
       if (!guardianPhone.trim()) {
@@ -144,15 +182,15 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
       nationality: nationality.trim(),
       birthDate: birthDate,
       birthPlace: birthPlace.trim(),
-      age: computedAge ?? undefined,
+      age: computedAge ?? (student.age || 0),
       schoolName: schoolName.trim(),
       educationalLevel: educationalLevel.trim(),
-      address: address.trim(),
+      address: [addressCity.trim(), addressDistrict.trim(), addressStreet.trim()].filter(Boolean).join(' - '),
       guardianName: guardianName.trim(),
-      guardianRelation: guardianRelation.trim(),
+      guardianRelation: (selectedRelationType === 'أخرى' ? customRelation.trim() : selectedRelationType) || '',
       guardianPhone: guardianPhone.trim(),
       parentPhone: guardianPhone.trim(),
-      phone: phone.trim() || undefined,
+      phone: phone.trim() || '',
       profileCompleted: true,
     };
 
@@ -176,7 +214,24 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
       <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-right animate-scale-up max-h-[92vh] flex flex-col">
         {/* Step 0: Welcome Screen */}
         {step === 0 && (
-          <div className="p-6 sm:p-8 flex flex-col items-center text-center space-y-6 my-auto">
+          <div className="relative p-6 sm:p-8 flex flex-col items-center text-center space-y-5 my-auto">
+            {/* Top Bar with Logout Button */}
+            <div className="w-full flex items-center justify-between pb-1 -mt-1">
+              <span className="text-[11px] font-bold text-slate-400 truncate max-w-[180px]">
+                حساب الطالب: {student.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => logout()}
+                className="px-2.5 py-1.5 rounded-xl text-slate-500 hover:text-rose-600 hover:bg-rose-50 border border-slate-200/80 hover:border-rose-200 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                title="تسجيل الخروج والعودة لشاشة الدخول"
+                aria-label="تسجيل الخروج"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>تسجيل الخروج</span>
+              </button>
+            </div>
+
             {/* Mosque Logo */}
             <div className="w-32 h-32 sm:w-36 sm:h-36 rounded-3xl bg-teal-50/70 border-2 border-teal-100 flex items-center justify-center p-3.5 shadow-lg shadow-teal-900/10">
               <img
@@ -186,14 +241,11 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
               />
             </div>
 
-            {/* Welcome Text requested exactly by the user */}
+            {/* Welcome Text */}
             <div className="space-y-2 max-w-sm">
               <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
                 حيّاك الله!
               </h2>
-              <p className="text-sm sm:text-base font-bold text-slate-700 leading-relaxed">
-                نأمل منك تعبئة البيانات التالية بكل دقة.
-              </p>
             </div>
 
             {/* Arrow Button to Start Data Entry */}
@@ -230,9 +282,20 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
                 </div>
               </div>
 
-              <span className="text-xs font-black bg-white/15 px-2.5 py-1 rounded-xl text-teal-100">
-                {step} / 3
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-black bg-white/15 px-2.5 py-1 rounded-xl text-teal-100">
+                  {step} / 3
+                </span>
+                <button
+                  type="button"
+                  onClick={() => logout()}
+                  className="p-1.5 rounded-xl bg-white/10 hover:bg-rose-500/30 text-teal-100 hover:text-white transition-colors cursor-pointer"
+                  title="تسجيل الخروج والعودة"
+                  aria-label="تسجيل الخروج"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             {/* Visual Step Progress Bar */}
@@ -413,48 +476,74 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
 
                 {/* 7. المرحلة الدراسية */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-800 mb-1">
-                    المرحلة الدراسية <span className="text-rose-500">*</span>
-                  </label>
-                  <div className="grid grid-cols-3 gap-1.5 mb-2">
-                    {['ابتدائي', 'متوسط', 'ثانوي'].map((lvl) => (
-                      <button
-                        key={lvl}
-                        type="button"
-                        onClick={() => setEducationalLevel(lvl)}
-                        className={`py-2 px-1 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                          educationalLevel === lvl
-                            ? 'bg-teal-700 text-white border-teal-700 shadow-2xs'
-                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        {lvl}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    type="text"
-                    value={educationalLevel}
-                    onChange={(e) => setEducationalLevel(e.target.value)}
-                    placeholder="أو حدد الصف الدراسي تحديداً (مثال: الصف الخامس الابتدائي)"
-                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 font-medium"
-                  />
-                </div>
-
-                {/* 8. عنوان الطالب */}
-                <div>
                   <label className="block text-xs font-bold text-slate-800 mb-1 flex items-center gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-teal-700" />
-                    <span>عنوان الطالب (المدينة - الحي - الشارع) <span className="text-rose-500">*</span></span>
+                    <GraduationCap className="w-3.5 h-3.5 text-teal-700" />
+                    <span>المرحلة الدراسية <span className="text-rose-500">*</span></span>
                   </label>
                   <input
                     type="text"
                     required
-                    value={address}
-                    onChange={(e) => setAddress(e.target.value)}
-                    placeholder="مثال: جدة - حي النسيم - شارع أم المؤمنين صفية"
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 font-medium"
+                    value={educationalLevel}
+                    onChange={(e) => setEducationalLevel(e.target.value)}
+                    placeholder="مثال: الصف الخامس الابتدائي"
+                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-medium"
                   />
+                </div>
+
+                {/* 8. عنوان الطالب */}
+                <div className="space-y-1.5">
+                  <div>
+                    <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <MapPin className="w-3.5 h-3.5 text-teal-700" />
+                      <span>عنوان الطالب <span className="text-rose-500">*</span></span>
+                    </label>
+                  </div>
+
+                  <div className="p-3 bg-slate-50/90 rounded-2xl border border-slate-200/90 space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {/* الحقل 1: المدينة */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          1. المدينة
+                        </label>
+                        <input
+                          type="text"
+                          value={addressCity}
+                          onChange={(e) => setAddressCity(e.target.value)}
+                          placeholder="مثال: جدة"
+                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-medium"
+                        />
+                      </div>
+
+                      {/* الحقل 2: الحي */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          2. الحي
+                        </label>
+                        <input
+                          type="text"
+                          value={addressDistrict}
+                          onChange={(e) => setAddressDistrict(e.target.value)}
+                          placeholder="مثال: حي النسيم"
+                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-medium"
+                        />
+                      </div>
+
+                      {/* الحقل 3: الشارع */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          3. الشارع
+                        </label>
+                        <input
+                          type="text"
+                          value={addressStreet}
+                          onChange={(e) => setAddressStreet(e.target.value)}
+                          placeholder="مثال: شارع أم المؤمنين صفية"
+                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-medium"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -484,13 +573,13 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
                     صلة القرابة <span className="text-rose-500">*</span>
                   </label>
                   <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 mb-2">
-                    {['أب', 'أم', 'أخ', 'عم', 'ولي أمر'].map((rel) => (
+                    {['أب', 'أم', 'أخ', 'عم', 'أخرى'].map((rel) => (
                       <button
                         key={rel}
                         type="button"
-                        onClick={() => setGuardianRelation(rel)}
+                        onClick={() => setSelectedRelationType(rel)}
                         className={`py-2 px-1 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                          guardianRelation === rel
+                          selectedRelationType === rel
                             ? 'bg-teal-700 text-white border-teal-700 shadow-2xs'
                             : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                         }`}
@@ -499,13 +588,21 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
                       </button>
                     ))}
                   </div>
-                  <input
-                    type="text"
-                    value={guardianRelation}
-                    onChange={(e) => setGuardianRelation(e.target.value)}
-                    placeholder="أو اكتب صلة القرابة هنا"
-                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 font-medium"
-                  />
+
+                  {/* تظهر خانة يكتب فيها صلة القرابة فقط لو اختار أخرى */}
+                  {selectedRelationType === 'أخرى' && (
+                    <div className="animate-fade-in mt-1.5">
+                      <input
+                        type="text"
+                        required
+                        autoFocus
+                        value={customRelation}
+                        onChange={(e) => setCustomRelation(e.target.value)}
+                        placeholder="اكتب صلة القرابة هنا (مثال: خال، جد، ولي أمر...)"
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-teal-600 focus:outline-hidden focus:ring-1 focus:ring-teal-600 font-medium bg-teal-50/20"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* 11. رقم الجوال لولي الأمر */}
