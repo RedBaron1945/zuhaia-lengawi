@@ -96,7 +96,7 @@ export const PointsAdjustmentModal: React.FC<PointsAdjustmentModalProps> = ({
           <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 flex items-center justify-between">
             <div>
               <h4 className="text-xs font-extrabold text-slate-900">{student.name}</h4>
-              <span className="text-[11px] text-slate-500">الرصيد الحالي: ⭐ {student.currentPoints} نقطة</span>
+              <span className="text-[11px] text-slate-500">الرصيد الحالي: {student.currentPoints} نقطة</span>
             </div>
             <span className="text-[10px] font-bold text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200">
               معاملة موثقة

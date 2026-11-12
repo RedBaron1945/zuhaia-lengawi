@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { RedemptionRequest } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
-import { Check, X, PackageCheck, RotateCcw, Clock3, AlertCircle, Sparkles } from 'lucide-react';
+import { Check, X, PackageCheck, RotateCcw, Clock3, AlertCircle, Sparkles, Calendar, Trash2 } from 'lucide-react';
 import { ConfirmationModal } from '../common/ConfirmationModal';
+import { formatHijriDateTime } from '../../utils/dateUtils';
 
 interface RedemptionManagerProps {
   onUpdate?: () => void;
@@ -13,6 +14,7 @@ interface RedemptionManagerProps {
 export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, supervisorName }) => {
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'delivered' | 'rejected'>('all');
   const [selectedReq, setSelectedReq] = useState<RedemptionRequest | null>(null);
+  const [deleteConfirmReq, setDeleteConfirmReq] = useState<RedemptionRequest | null>(null);
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('نفاد الكوبونات لدى المتجر حالياً');
   const [refundPoints, setRefundPoints] = useState(true);
@@ -71,6 +73,16 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
     }
   };
 
+  const handleConfirmDelete = () => {
+    if (!deleteConfirmReq) return;
+    const res = repository.deleteRedemptionRequest(deleteConfirmReq.id, supervisorName);
+    if (res.success) {
+      showToast(res.message, 'info');
+      setDeleteConfirmReq(null);
+      if (onUpdate) onUpdate();
+    }
+  };
+
   return (
     <div className="space-y-3">
       {/* Filter Tabs - Distributed Evenly */}
@@ -106,7 +118,7 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
           {requests.map((req) => (
             <div
               key={req.id}
-              className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs flex flex-col gap-3 hover:border-teal-200 transition-colors"
+              className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs flex flex-col gap-3 hover:border-teal-200 transition-colors relative"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-3 min-w-0">
@@ -117,18 +129,25 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
                     <h4 className="text-xs sm:text-sm font-black text-slate-900 truncate">{req.studentName}</h4>
                     {/* Standalone Prominent Amount Line */}
                     <div className="text-sm font-black text-teal-800 tabular-nums my-0.5">
-                      ⭐ {req.rewardCost} نقطة
+                      {req.rewardCost} نقطة
                     </div>
                     {/* Reward Title Beneath */}
                     <p className="text-xs font-bold text-slate-700 truncate">
                       {req.rewardTitle}
                     </p>
-                    <span className="text-[11px] text-slate-400 mt-0.5 block truncate">{req.circleName}</span>
+                    <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-slate-400 mt-0.5">
+                      <span className="truncate">{req.circleName}</span>
+                      <span>•</span>
+                      <span className="flex items-center gap-1 tabular-nums text-slate-500 font-medium">
+                        <Calendar className="w-3 h-3 text-slate-400" />
+                        <span>تاريخ الطلب: {req.requestDate ? formatHijriDateTime(req.requestDate) : 'غير مسجل'}</span>
+                      </span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Status indicator */}
-                <div className="text-left shrink-0">
+                {/* Status indicator and Delete / X Button */}
+                <div className="flex items-center gap-1.5 shrink-0">
                   <span
                     className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${
                       req.status === 'pending'
@@ -149,6 +168,16 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
                       ? 'تم التسليم'
                       : 'مرفوض'}
                   </span>
+
+                  {/* علامة إكس أو حذف لتاريخ وسجل المطالبة */}
+                  <button
+                    onClick={() => setDeleteConfirmReq(req)}
+                    title="حذف المطالبة من السجل"
+                    aria-label="حذف المطالبة"
+                    className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 flex items-center justify-center transition-all cursor-pointer shadow-2xs group"
+                  >
+                    <X className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                  </button>
                 </div>
               </div>
 
@@ -186,13 +215,28 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
                 {req.status === 'delivered' && (
                   <div className="text-xs text-slate-500 flex items-center justify-between w-full">
                     <span>المشرف المسلّم: {req.handledBy || supervisorName}</span>
+                    <button
+                      onClick={() => setDeleteConfirmReq(req)}
+                      className="text-xs text-rose-600 hover:text-rose-800 font-bold flex items-center gap-1 cursor-pointer hover:underline"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>حذف من السجل</span>
+                    </button>
                   </div>
                 )}
 
                 {req.status === 'rejected' && (
                   <div className="text-xs text-slate-500 flex items-center justify-between w-full">
-                    <span>مرفوض: {req.rejectionReason}</span>
-                    {req.refunded && <span className="text-emerald-700 font-bold">(تمت إعادة النقاط)</span>}
+                    <span>
+                      مرفوض: {req.rejectionReason} {req.refunded && <span className="text-emerald-700 font-bold">(تمت إعادة النقاط)</span>}
+                    </span>
+                    <button
+                      onClick={() => setDeleteConfirmReq(req)}
+                      className="text-xs text-rose-600 hover:text-rose-800 font-bold flex items-center gap-1 cursor-pointer hover:underline"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>حذف من السجل</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -240,19 +284,37 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
             <div className="flex flex-col gap-2 pt-2">
               <button
                 onClick={handleConfirmReject}
-                className="w-full min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs"
+                className="w-full min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs cursor-pointer"
               >
                 تأكيد الرفض
               </button>
               <button
                 onClick={() => setRejectModalOpen(false)}
-                className="w-full min-h-[40px] rounded-xl border border-slate-200 text-slate-600 font-medium text-xs hover:bg-slate-50"
+                className="w-full min-h-[40px] rounded-xl border border-slate-200 text-slate-600 font-medium text-xs hover:bg-slate-50 cursor-pointer"
               >
                 إلغاء
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Delete / X Confirmation Modal for Redemption Request History */}
+      {deleteConfirmReq && (
+        <ConfirmationModal
+          isOpen={!!deleteConfirmReq}
+          onClose={() => setDeleteConfirmReq(null)}
+          onConfirm={handleConfirmDelete}
+          title="حذف المطالبة من السجل"
+          message={`هل أنت متأكد من رغبتك في حذف مطالبة (${deleteConfirmReq.rewardTitle}) للطالب (${deleteConfirmReq.studentName}) نهائياً من سجل وتاريخ المطالبات؟${
+            deleteConfirmReq.status === 'pending' && !deleteConfirmReq.refunded
+              ? ` سيتم استرداد (${deleteConfirmReq.rewardCost} نقطة) تلقائياً لرصيد الطالب.`
+              : ''
+          }`}
+          confirmText="نعم، حذف المطالبة"
+          cancelText="إلغاء"
+          type="danger"
+        />
       )}
     </div>
   );

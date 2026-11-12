@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, Gift, Clock, Award, Users, BookOpen, BarChart3, Settings, ShieldCheck } from 'lucide-react';
+import { Home, Gift, Clock, Award, Users, BookOpen, BarChart3, Settings, ShieldCheck, LifeBuoy } from 'lucide-react';
 import { Role } from '../../types';
 
 interface BottomNavProps {
@@ -28,16 +28,16 @@ export const BottomNav: React.FC<BottomNavProps> = ({ role, activeTab, onTabChan
         ];
       case 'supervisor':
         return [
-          { id: 'leaderboard', label: 'الترتيب', icon: Award },
+          { id: 'attention', label: 'المتابعة', icon: ShieldCheck },
+          { id: 'exam_requests', label: 'الاختبارات', icon: BookOpen },
           { id: 'stats', label: 'الإحصائيات', icon: BarChart3 },
           { id: 'redemptions', label: 'المطالبات', icon: Gift },
-          { id: 'attention', label: 'المتابعة', icon: ShieldCheck },
         ];
       case 'admin':
         return [
           { id: 'students', label: 'الطلاب', icon: Users },
-          { id: 'points', label: 'النقاط', icon: Award },
           { id: 'rewards_mgmt', label: 'المكافآت', icon: Gift },
+          { id: 'tickets', label: 'الدعم', icon: LifeBuoy },
           { id: 'settings', label: 'القواعد', icon: Settings },
           { id: 'audit', label: 'السجل', icon: Clock },
         ];

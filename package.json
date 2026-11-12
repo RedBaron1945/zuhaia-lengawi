@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "generate-icons": "node scripts/generate-pwa-icons.js"
+    "generate-icons": "node scripts/generate-pwa-icons.js",
+    "generate-assets": "node scripts/generate-assets.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

@@ -31,6 +31,7 @@ try {
       tabManager: persistentMultipleTabManager(),
       cacheSizeBytes: CACHE_SIZE_UNLIMITED,
     }),
+    experimentalAutoDetectLongPolling: true,
   });
 } catch {
   // Graceful fallback for restricted browser sandbox / private browsing

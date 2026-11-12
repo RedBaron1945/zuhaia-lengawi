@@ -123,7 +123,7 @@ export const SupervisorStats: React.FC<SupervisorStatsProps> = ({ students }) =>
                 <span className="font-bold text-slate-800">
                   {idx + 1}. {s.name}
                 </span>
-                <span className="font-black text-teal-700 tabular-nums">⭐ {s.currentPoints}</span>
+                <span className="font-black text-teal-700 tabular-nums">{s.currentPoints} ن</span>
               </div>
             ))}
           </div>

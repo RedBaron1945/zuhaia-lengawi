@@ -42,8 +42,27 @@ export const CIRCLE_DAYS: ArabicDayName[] = [
   'الإثنين',
   'الثلاثاء',
   'الأربعاء',
-  'الخميس',
 ];
+
+/**
+ * Checks if a date falls strictly on a circle day (Sunday through Wednesday).
+ * 0 = Sunday, 1 = Monday, 2 = Tuesday, 3 = Wednesday.
+ */
+export function isCircleDay(dateInput?: Date | string | null): boolean {
+  if (!dateInput) return false;
+  try {
+    const d =
+      typeof dateInput === 'string'
+        ? dateInput.includes('T')
+          ? new Date(dateInput)
+          : parseISODate(dateInput)
+        : dateInput;
+    const dayIdx = d.getDay();
+    return dayIdx >= 0 && dayIdx <= 3;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Returns the exact Arabic day name for any Date or ISO date string (YYYY-MM-DD).
@@ -181,7 +200,7 @@ export function getSundayOfWeek(date: Date): Date {
   return d;
 }
 
-// Get the active circle days (Sunday to Thursday) for a given week start date
+// Get the active circle days (Sunday to Wednesday) for a given week start date
 export function getCircleDaysOfWeek(weekStartDate: Date): WeekDayInfo[] {
   const sunday = getSundayOfWeek(weekStartDate);
   const todayStr = formatISODate(new Date());
@@ -191,7 +210,6 @@ export function getCircleDaysOfWeek(weekStartDate: Date): WeekDayInfo[] {
     { name: 'الإثنين', offset: 1 },
     { name: 'الثلاثاء', offset: 2 },
     { name: 'الأربعاء', offset: 3 },
-    { name: 'الخميس', offset: 4 },
   ];
 
   return daysMapping.map((item) => {
@@ -267,21 +285,21 @@ export function formatGregorianArabicDate(dateInput: Date | string): string {
   }
 }
 
-// Get the previous circle day (Sunday through Thursday, skipping Friday & Saturday)
+// Get the previous circle day (Sunday through Wednesday, skipping Thursday, Friday, and Saturday)
 export function getPreviousCircleDate(dateStr: string): string {
   const d = parseISODate(dateStr);
   do {
     d.setDate(d.getDate() - 1);
-  } while (d.getDay() === 5 || d.getDay() === 6); // 5=Friday, 6=Saturday
+  } while (d.getDay() > 3); // 4=Thursday, 5=Friday, 6=Saturday
   return formatISODate(d);
 }
 
-// Get the next circle day (Sunday through Thursday, skipping Friday & Saturday)
+// Get the next circle day (Sunday through Wednesday, skipping Thursday, Friday, and Saturday)
 export function getNextCircleDate(dateStr: string): string {
   const d = parseISODate(dateStr);
   do {
     d.setDate(d.getDate() + 1);
-  } while (d.getDay() === 5 || d.getDay() === 6); // 5=Friday, 6=Saturday
+  } while (d.getDay() > 3); // 4=Thursday, 5=Friday, 6=Saturday
   return formatISODate(d);
 }
 

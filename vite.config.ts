@@ -10,12 +10,12 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg', 'branding/*'],
+        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg', 'og-image.png', 'og-image-square.png', 'branding/*'],
         manifest: {
           id: '/',
-          name: 'حلقات جامع ومسجد زهية لنجاوي',
-          short_name: 'ترتيل زهية',
-          description: 'منظومة متكاملة لإدارة وتحفيز طلاب حلقات القرآن الكريم بمسجد زهية لنجاوي، بنظام النقاط والمكافآت التفاعلي والتحضير السريع من الهاتف.',
+          name: 'حلقات زهية لنجاوي',
+          short_name: 'حلقات زهية لنجاوي',
+          description: 'منظومة متكاملة لإدارة وتحفيز طلاب حلقات القرآن الكريم بجامع ومسجد زهية لنجاوي، بنظام النقاط والمكافآت التفاعلي والتحضير السريع من الهاتف.',
           theme_color: '#0f766e',
           background_color: '#042f2e',
           display: 'standalone',
@@ -80,8 +80,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
     ],

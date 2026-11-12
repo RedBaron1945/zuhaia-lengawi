@@ -3,26 +3,86 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>حلقات مسجد زهية لنجاوي - منصة تحفيز القرآن الكريم</title>
-    <meta name="description" content="منظومة متكاملة لإدارة وتحفيز طلاب حلقات القرآن الكريم بمسجد زهية لنجاوي، بنظام النقاط والمكافآت التفاعلي والتحضير السريع من الهاتف." />
-    <meta property="og:title" content="حلقات مسجد زهية لنجاوي - منصة تحفيز القرآن الكريم" />
-    <meta property="og:description" content="منظومة متكاملة لإدارة وتحفيز طلاب حلقات القرآن الكريم بمسجد زهية لنجاوي، بنظام النقاط والمكافآت التفاعلي والتحضير السريع من الهاتف." />
-    <meta property="og:type" content="website" />
+    
+    <!-- Primary Identity & Title -->
+    <title>حلقات مسجد زهية لنجاوي - تحفيز الطلاب</title>
+    <meta name="title" content="حلقات مسجد زهية لنجاوي - تحفيز الطلاب" />
+    <meta name="application-name" content="حلقات مسجد زهية لنجاوي" />
+    <meta name="description" content="منظومة متكاملة لإدارة وتحفيز طلاب حلقات القرآن الكريم بجامع ومسجد زهية لنجاوي، بنظام النقاط والمكافآت التفاعلي والتحضير السريع من الهاتف." />
+    
+    <!-- Mobile Web App & PWA Settings -->
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="ترتيل زهية" />
+    <meta name="apple-mobile-web-app-title" content="حلقات مسجد زهية لنجاوي" />
+    
+    <!-- OpenGraph Social Sharing Card (WhatsApp, Telegram, Facebook, iMessage) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="حلقات مسجد زهية لنجاوي" />
+    <meta property="og:title" content="حلقات مسجد زهية لنجاوي - تحفيز الطلاب" />
+    <meta property="og:description" content="منظومة متكاملة لمتابعة وتحفيز طلاب حلقات القرآن الكريم بجامع ومسجد زهية لنجاوي، بنظام النقاط والمكافآت التفاعلي والتحضير السريع." />
+    <meta property="og:image" content="/og-image.png" />
+    <meta property="og:image:secure_url" content="/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="شعار حلقات مسجد زهية لنجاوي - تحفيز الطلاب" />
+    <meta property="og:locale" content="ar_SA" />
+    
+    <!-- Twitter / X Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="حلقات مسجد زهية لنجاوي - تحفيز الطلاب" />
+    <meta name="twitter:description" content="منظومة متكاملة لمتابعة وتحفيز طلاب حلقات القرآن الكريم بجامع ومسجد زهية لنجاوي." />
+    <meta name="twitter:image" content="/og-image.png" />
+    <meta name="twitter:image:alt" content="شعار حلقات مسجد زهية لنجاوي - تحفيز الطلاب" />
+
+    <!-- Favicons & App Icons -->
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+    <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Amiri+Quran&family=Reem+Kufi:wght@400;500;600;700&family=Tajawal:wght@300;400;500;700;800;900&display=swap" rel="stylesheet">
+
+    <!-- Schema.org Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "حلقات مسجد زهية لنجاوي - تحفيز الطلاب",
+      "alternateName": "حلقات جامع ومسجد زهية لنجاوي",
+      "applicationCategory": "EducationalApplication",
+      "operatingSystem": "All",
+      "description": "منظومة متكاملة لمتابعة وتحفيز طلاب حلقات القرآن الكريم بجامع ومسجد زهية لنجاوي.",
+      "image": "/og-image.png"
+    }
+    </script>
+    <script>
+      // Automatically resolve absolute URL for og:image and og:url for WhatsApp and social sharing
+      (function() {
+        try {
+          var origin = window.location.origin;
+          var ogImg = document.querySelector('meta[property="og:image"]');
+          var ogSec = document.querySelector('meta[property="og:image:secure_url"]');
+          var twImg = document.querySelector('meta[name="twitter:image"]');
+          if (ogImg && !ogImg.content.startsWith('http')) {
+            ogImg.content = origin + '/og-image.png';
+          }
+          if (ogSec && !ogSec.content.startsWith('http')) {
+            ogSec.content = origin + '/og-image.png';
+          }
+          if (twImg && !twImg.content.startsWith('http')) {
+            twImg.content = origin + '/og-image.png';
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body class="bg-slate-50 text-slate-800 antialiased selection:bg-teal-600 selection:text-white overflow-x-hidden w-full max-w-full">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

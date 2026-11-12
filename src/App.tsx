@@ -13,10 +13,13 @@ import { TeacherView } from './components/teacher/TeacherView';
 import { SupervisorView } from './components/supervisor/SupervisorView';
 import { AdminView } from './components/admin/AdminView';
 import { PWAInstallBanner } from './components/common/PWAInstallBanner';
+import { Footer } from './components/common/Footer';
+import { SupportTicketModal } from './components/support/SupportTicketModal';
 
 function AppContent() {
   const { currentUser, isAuthenticated } = useAuth();
   const [resetKey, setResetKey] = useState(0);
+  const [isSupportModalOpen, setIsSupportModalOpen] = useState(false);
 
   if (!isAuthenticated || !currentUser) {
     return <LoginView />;
@@ -38,6 +41,15 @@ function AppContent() {
         {currentUser.role === 'supervisor' && <SupervisorView currentUser={currentUser} />}
         {currentUser.role === 'admin' && <AdminView currentUser={currentUser} />}
       </main>
+
+      {/* Universal Footer with Support Ticket link */}
+      <Footer onOpenSupport={() => setIsSupportModalOpen(true)} />
+
+      {/* Support Ticket Modal */}
+      <SupportTicketModal
+        isOpen={isSupportModalOpen}
+        onClose={() => setIsSupportModalOpen(false)}
+      />
     </div>
   );
 }

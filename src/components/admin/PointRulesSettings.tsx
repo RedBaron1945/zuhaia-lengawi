@@ -103,7 +103,7 @@ export const PointRulesSettings: React.FC<PointRulesSettingsProps> = ({ adminUse
           {/* 4. Discipline */}
           <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
             <label className="block text-xs font-bold text-slate-800 mb-1">
-              ⭐ 4. الإنضباط
+              4. الإنضباط
             </label>
             <p className="text-[11px] text-slate-500 mb-2">الأدب وحسن السلوك والتفاعل القرآني</p>
             <div className="flex items-center gap-2">

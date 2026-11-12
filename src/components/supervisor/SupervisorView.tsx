@@ -1,20 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Student } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
-import { Leaderboard } from './Leaderboard';
 import { SupervisorStats } from './SupervisorStats';
 import { NeedsAttentionList } from './NeedsAttentionList';
 import { RedemptionManager } from './RedemptionManager';
+import { ExamRequestsManager } from './ExamRequestsManager';
 import { BottomNav } from '../common/BottomNav';
 import { useToast } from '../../context/ToastContext';
-import { Trophy, BarChart3, Gift, AlertTriangle, ShieldCheck, RefreshCw, Sparkles } from 'lucide-react';
+import { BarChart3, Gift, AlertTriangle, ShieldCheck, RefreshCw, Sparkles, BookOpen } from 'lucide-react';
 
 interface SupervisorViewProps {
   currentUser: User;
 }
 
 export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) => {
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'stats' | 'redemptions' | 'attention'>('leaderboard');
+  const [activeTab, setActiveTab] = useState<'attention' | 'exam_requests' | 'stats' | 'redemptions'>('attention');
   const [students, setStudents] = useState<Student[]>(() => repository.getStudents());
   const [, setTick] = useState(0);
   const { showToast } = useToast();
@@ -34,6 +34,7 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
   }, []);
 
   const pendingRequests = repository.getRedemptionRequests({ status: 'pending' });
+  const pendingExamNominations = repository.getExamNominations({ status: 'pending' });
   const attentionCount = students.filter((s) => {
     if (!s.active) return false;
     if (s.attentionReason || s.consecutiveAbsences >= 2 || s.daysWithoutLog >= 7) return true;
@@ -135,7 +136,7 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="text-lg sm:text-xl font-black text-white tracking-normal">
-                  مرحبًا بك، شيخ عبدالله بري
+                  مرحبًا بك، {currentUser.name || 'مدير المجمع'}
                 </h1>
                 <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-teal-950 bg-amber-300 px-2.5 py-0.5 rounded-full shadow-2xs">
                   <Sparkles className="w-3 h-3 text-amber-900 fill-amber-900" />
@@ -151,7 +152,7 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
           {/* Quick Pill: 9 Approved Quran Circles */}
           <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-white/10 backdrop-blur-xs border border-white/15 px-3 py-1.5 rounded-xl text-xs text-white">
             <span className="text-amber-300 text-sm">🕌</span>
-            <span className="font-bold text-teal-100">9 حلقات قرآنية معتمدة</span>
+            <span className="font-bold text-teal-100">9 حلقات قرآنية معتمدة · {students.filter((s) => s.active).length} طالباً</span>
           </div>
         </div>
       </div>
@@ -159,13 +160,25 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
       {/* Desktop Tab Buttons */}
       <div className="hidden md:flex items-center gap-1 bg-white p-1 rounded-2xl border border-slate-200 shadow-xs mb-4">
         <button
-          onClick={() => setActiveTab('leaderboard')}
+          onClick={() => setActiveTab('attention')}
           className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-            activeTab === 'leaderboard' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            activeTab === 'attention' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
-          <Trophy className="w-4 h-4" />
-          <span>الترتيب العام</span>
+          <ShieldCheck className="w-4 h-4 text-emerald-400" />
+          <span>صفحة المتابعة ({attentionCount})</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('exam_requests')}
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 relative ${
+            activeTab === 'exam_requests' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <BookOpen className="w-4 h-4" />
+          <span>طلبات الاختبارات</span>
+          {pendingExamNominations.length > 0 && (
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+          )}
         </button>
         <button
           onClick={() => setActiveTab('stats')}
@@ -188,31 +201,30 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
             <span className="w-2 h-2 rounded-full bg-amber-400" />
           )}
         </button>
-        <button
-          onClick={() => setActiveTab('attention')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-            activeTab === 'attention' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>صفحة المتابعة ({attentionCount})</span>
-        </button>
       </div>
 
       {/* Views */}
-      {activeTab === 'leaderboard' && <Leaderboard students={students} />}
+      {activeTab === 'attention' && <NeedsAttentionList students={students} />}
+      {activeTab === 'exam_requests' && (
+        <ExamRequestsManager
+          supervisorName={currentUser.name}
+          onUpdate={() => setTick((t) => t + 1)}
+        />
+      )}
       {activeTab === 'stats' && <SupervisorStats students={students} />}
       {activeTab === 'redemptions' && (
         <RedemptionManager supervisorName={currentUser.name} onUpdate={() => setTick((t) => t + 1)} />
       )}
-      {activeTab === 'attention' && <NeedsAttentionList students={students} />}
 
-      {/* Mobile Bottom Navigation with Redemption Notification Badge */}
+      {/* Mobile Bottom Navigation with Badges */}
       <BottomNav
         role="supervisor"
         activeTab={activeTab}
         onTabChange={(t) => setActiveTab(t as any)}
-        badges={{ redemptions: pendingRequests.length }}
+        badges={{
+          redemptions: pendingRequests.length,
+          exam_requests: pendingExamNominations.length,
+        }}
       />
     </div>
   );

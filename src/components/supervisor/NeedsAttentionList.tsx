@@ -1,32 +1,29 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import {
   AlertTriangle,
   Search,
-  CheckCircle2,
   X,
   User,
   CreditCard,
   PhoneCall,
   Save,
   MessageSquare,
-  Award,
   Check,
   Eye,
   GraduationCap,
   Users as UsersIcon,
-  Sparkles,
   ArrowUpDown,
   UserCheck,
   UserX,
   Trophy,
   Filter,
-  TrendingUp,
+  Info,
+  ChevronDown,
 } from 'lucide-react';
 import { calculateAge } from '../../utils/dateUtils';
-import { groupTransactionsByDay } from '../../utils/pointUtils';
 
 interface NeedsAttentionListProps {
   students: Student[];
@@ -35,8 +32,12 @@ interface NeedsAttentionListProps {
 export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students }) => {
   const [search, setSearch] = useState('');
   const [circleFilter, setCircleFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'perfect' | 'has_absences' | 'flagged'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'perfect' | 'has_absences'>('all');
   const [sortBy, setSortBy] = useState<'attendance' | 'absences' | 'points' | 'rate'>('attendance');
+  const [visibleCount, setVisibleCount] = useState(20);
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+  const [showRubricInfo, setShowRubricInfo] = useState(false);
+
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [showNationalId, setShowNationalId] = useState(false);
   const [editingNote, setEditingNote] = useState('');
@@ -45,6 +46,11 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
 
   const circles = repository.getCircles();
   const activeStudents = useMemo(() => students.filter((s) => s.active), [students]);
+
+  // Reset pagination on filter or sort change
+  useEffect(() => {
+    setVisibleCount(20);
+  }, [search, circleFilter, statusFilter, sortBy]);
 
   // Pre-calculate attendance stats for each student
   const studentStatsMap = useMemo(() => {
@@ -99,7 +105,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
     };
   };
 
-  // Overall Center Statistics (Cumulative across all active students)
+  // Overall Center Statistics for chosen period
   const overallStats = useMemo(() => {
     let totalPresent = 0;
     let totalAbsent = 0;
@@ -135,23 +141,18 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
     };
   }, [activeStudents, studentStatsMap]);
 
-  // Filter and sort students into a clear leaderboard / ranking
+  // Filter and sort students
   const rankedStudents = useMemo(() => {
     return activeStudents
       .filter((s) => (circleFilter === 'all' ? true : s.circleId === circleFilter))
       .filter((s) => (search ? s.name.includes(search) : true))
       .filter((s) => {
         const stats = studentStatsMap.get(s.id);
-        const flag = getStudentFlag(s);
-
         if (statusFilter === 'perfect') {
           return stats?.hasRecords && stats.attendanceRate >= 90;
         }
         if (statusFilter === 'has_absences') {
           return (stats?.absentDays || 0) > 0;
-        }
-        if (statusFilter === 'flagged') {
-          return flag.isFlagged;
         }
         return true;
       })
@@ -166,30 +167,47 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
         const rateB = statsB?.attendanceRate || 0;
 
         if (sortBy === 'attendance') {
-          // Sort by most attendance days descending, then by rate, then points
           if (presentB !== presentA) return presentB - presentA;
           if (rateB !== rateA) return rateB - rateA;
           return b.currentPoints - a.currentPoints;
         }
         if (sortBy === 'absences') {
-          // Sort by most absent days descending (to prioritize follow-up)
           if (absentB !== absentA) return absentB - absentA;
           if (rateA !== rateB) return rateA - rateB;
           return a.currentPoints - b.currentPoints;
         }
         if (sortBy === 'points') {
-          // Sort by cumulative points descending
           if (b.currentPoints !== a.currentPoints) return b.currentPoints - a.currentPoints;
           return presentB - presentA;
         }
         if (sortBy === 'rate') {
-          // Sort by attendance rate % descending
           if (rateB !== rateA) return rateB - rateA;
           return presentB - presentA;
         }
         return 0;
       });
   }, [activeStudents, circleFilter, search, statusFilter, sortBy, studentStatsMap]);
+
+  // Metric value display function for podium (single clean number)
+  const getSingleMetricNumber = (stats: any, s: Student) => {
+    switch (sortBy) {
+      case 'attendance':
+        return `${stats.presentDays} يوم`;
+      case 'points':
+        return `${s.currentPoints} نقطة`;
+      case 'rate':
+        return stats.hasRecords ? `${stats.attendanceRate}%` : '0%';
+      case 'absences':
+        return `${stats.absentDays} غياب`;
+    }
+  };
+
+  // Top 3 Podium
+  const showPodium = !search && rankedStudents.length >= 3;
+  const podiumStudents = showPodium ? rankedStudents.slice(0, 3) : [];
+  const listStudents = showPodium ? rankedStudents.slice(3) : rankedStudents;
+  const paginatedStudents = listStudents.slice(0, visibleCount);
+  const rankOffset = showPodium ? 4 : 1;
 
   const handleOpenStudentModal = (student: Student) => {
     setSelectedStudent(student);
@@ -263,133 +281,83 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
     return base.slice(0, 4) + '****' + base.slice(-2);
   };
 
-  const getRankBadge = (rank: number) => {
-    if (rank === 1) {
-      return (
-        <div
-          className="w-8 h-8 rounded-full bg-amber-100 border-2 border-amber-400 text-amber-800 flex items-center justify-center font-black text-sm shadow-2xs shrink-0"
-          title="المركز الأول"
-        >
-          🥇
-        </div>
-      );
-    }
-    if (rank === 2) {
-      return (
-        <div
-          className="w-8 h-8 rounded-full bg-slate-100 border-2 border-slate-300 text-slate-700 flex items-center justify-center font-black text-sm shadow-2xs shrink-0"
-          title="المركز الثاني"
-        >
-          🥈
-        </div>
-      );
-    }
-    if (rank === 3) {
-      return (
-        <div
-          className="w-8 h-8 rounded-full bg-amber-50 border-2 border-amber-600/40 text-amber-900 flex items-center justify-center font-black text-sm shadow-2xs shrink-0"
-          title="المركز الثالث"
-        >
-          🥉
-        </div>
-      );
-    }
-    return (
-      <div
-        className="w-8 h-8 rounded-full bg-slate-50 border border-slate-200 text-slate-700 flex items-center justify-center font-black text-xs tabular-nums shrink-0"
-        title={`المركز ${rank}`}
-      >
-        #{rank}
-      </div>
-    );
-  };
-
   return (
-    <div className="space-y-3.5">
-      {/* 1. Header & Summary Stats Cards for the General Supervisor */}
-      <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/90 shadow-2xs space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-          <div>
-            <h2 className="text-sm sm:text-base font-black text-slate-900 flex items-center gap-2">
-              <Trophy className="w-4 h-4 text-teal-700" />
-              <span>قسم المتابعة وترتيب الطلاب</span>
-            </h2>
-            <p className="text-[11px] text-slate-500 mt-0.5 font-medium">
-              ترتيب الطلاب مع رصيد أيام الحضور والغياب التراكمي (معيار الرصد: 2 أو 1 = حاضر · 0 = غائب)
-            </p>
+    <div className="space-y-3 pb-28 select-text">
+      {/* (5) Compact Statistics Line / 2 Cards (Shown ONLY when data exists) with ⓘ info button */}
+      {overallStats.hasRecords && (
+        <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+              <span>إحصائيات الانضباط</span>
+              <span className="text-[10px] text-slate-400 font-medium">
+                (التراكمي)
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowRubricInfo((prev) => !prev)}
+              className="text-slate-400 hover:text-teal-700 p-1 rounded-md transition-colors cursor-pointer"
+              title="معيار الرصد"
+            >
+              <Info className="w-4 h-4" />
+            </button>
           </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
-            <span className="text-[11px] font-black text-teal-900 bg-teal-50 border border-teal-200 px-2.5 py-1 rounded-xl shadow-2xs">
-              إجمالي الطلاب: {overallStats.totalStudents}
-            </span>
-          </div>
-        </div>
+          {/* ⓘ Rubric explanation popup / banner */}
+          {showRubricInfo && (
+            <div className="bg-teal-50 border border-teal-200 rounded-lg p-2 text-[11px] text-teal-900 font-medium flex items-center justify-between animate-fade-in">
+              <span>قاعدة الرصد التلقائي: 2 أو 1 = حاضر · 0 = غائب</span>
+              <button
+                type="button"
+                onClick={() => setShowRubricInfo(false)}
+                className="text-teal-600 hover:text-teal-800"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
-        {/* 4 Cumulative KPI Metric Tiles */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
-          {/* إجمالي أيام الحضور */}
-          <div className="bg-gradient-to-b from-emerald-50/80 to-emerald-50/30 p-2.5 rounded-2xl border border-emerald-200/90 flex flex-col items-center justify-center shadow-2xs">
-            <span className="text-[10px] text-emerald-800 font-extrabold flex items-center gap-1">
-              <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>مجموع أيام الحضور</span>
-            </span>
-            <span className="text-base sm:text-lg font-black text-emerald-900 tabular-nums mt-0.5">
-              {overallStats.totalPresentDays} يوم
-            </span>
-            <span className="text-[9px] text-emerald-700 font-bold mt-0.5">
-              رصد المعلمين (2 أو 1)
-            </span>
-          </div>
+          {/* 2 Compact Summary Cards */}
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            {/* Presence & Rate Card */}
+            <div className="bg-emerald-50/70 p-2 rounded-xl border border-emerald-200/80 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] text-emerald-800 font-bold block">مجموع الحضور</span>
+                <span className="text-xs sm:text-sm font-black text-emerald-950 tabular-nums">
+                  {overallStats.totalPresentDays} يوم
+                </span>
+              </div>
+              <div className="text-left">
+                <span className="text-[10px] text-emerald-700 font-bold block">الانضباط</span>
+                <span className="text-xs font-black text-emerald-900 tabular-nums">
+                  {overallStats.overallRate}%
+                </span>
+              </div>
+            </div>
 
-          {/* إجمالي أيام الغياب */}
-          <div className="bg-gradient-to-b from-rose-50/80 to-rose-50/30 p-2.5 rounded-2xl border border-rose-200/90 flex flex-col items-center justify-center shadow-2xs">
-            <span className="text-[10px] text-rose-800 font-extrabold flex items-center gap-1">
-              <UserX className="w-3.5 h-3.5 text-rose-600" />
-              <span>مجموع أيام الغياب</span>
-            </span>
-            <span className="text-base sm:text-lg font-black text-rose-900 tabular-nums mt-0.5">
-              {overallStats.totalAbsentDays} يوم
-            </span>
-            <span className="text-[9px] text-rose-700 font-bold mt-0.5">
-              رصد المعلمين (0)
-            </span>
-          </div>
-
-          {/* نسبة الحضور العامة */}
-          <div className="bg-gradient-to-b from-teal-50/80 to-teal-50/30 p-2.5 rounded-2xl border border-teal-200/90 flex flex-col items-center justify-center shadow-2xs">
-            <span className="text-[10px] text-teal-800 font-extrabold flex items-center gap-1">
-              <TrendingUp className="w-3.5 h-3.5 text-teal-600" />
-              <span>متوسط نسبة الانضباط</span>
-            </span>
-            <span className="text-base sm:text-lg font-black text-teal-950 tabular-nums mt-0.5">
-              {overallStats.hasRecords ? `${overallStats.overallRate}%` : '—'}
-            </span>
-            <span className="text-[9px] text-teal-700 font-bold mt-0.5">
-              لجميع الحلقات القرآنية
-            </span>
-          </div>
-
-          {/* يحتاجون متابعة */}
-          <div className="bg-gradient-to-b from-amber-50/80 to-amber-50/30 p-2.5 rounded-2xl border border-amber-200/90 flex flex-col items-center justify-center shadow-2xs">
-            <span className="text-[10px] text-amber-800 font-extrabold flex items-center gap-1">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-              <span>تنبيهات وملاحظات</span>
-            </span>
-            <span className="text-base sm:text-lg font-black text-amber-950 tabular-nums mt-0.5">
-              {overallStats.flaggedCount} طالب
-            </span>
-            <span className="text-[9px] text-amber-700 font-bold mt-0.5">
-              تستدعي التدخل التربوي
-            </span>
+            {/* Absence & Flagged Card */}
+            <div className="bg-rose-50/70 p-2 rounded-xl border border-rose-200/80 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] text-rose-800 font-bold block">مجموع الغياب</span>
+                <span className="text-xs sm:text-sm font-black text-rose-950 tabular-nums">
+                  {overallStats.totalAbsentDays} يوم
+                </span>
+              </div>
+              <div className="text-left">
+                <span className="text-[10px] text-amber-700 font-bold block">تنبيهات</span>
+                <span className="text-xs font-black text-amber-900 tabular-nums">
+                  {overallStats.flaggedCount}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* 2. Filter & Sorting Bar */}
-      <div className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2.5">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-          {/* Search by student name */}
+      {/* (6) Search + Filter Button Row & Equal-Width Segment Pills */}
+      <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs space-y-2">
+        <div className="flex items-center gap-2">
+          {/* Search Input */}
           <div className="relative flex-1 min-w-0">
             <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
             <input
@@ -397,7 +365,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="بحث باسم الطالب..."
-              className="w-full pr-9 pl-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200/90 focus:bg-white focus:outline-hidden focus:border-teal-600 min-h-[38px] shadow-2xs placeholder:text-slate-400 font-medium"
+              className="w-full pr-9 pl-8 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-hidden focus:border-teal-600 min-h-[38px] placeholder:text-slate-400 font-medium"
             />
             {search && (
               <button
@@ -409,103 +377,156 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
             )}
           </div>
 
-          {/* Circle Filter */}
-          <select
-            value={circleFilter}
-            onChange={(e) => setCircleFilter(e.target.value)}
-            className="px-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200/90 text-slate-800 font-bold min-h-[38px] shadow-2xs cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600"
+          {/* Filter Sheet Trigger Button */}
+          <button
+            type="button"
+            onClick={() => setIsFilterSheetOpen(true)}
+            className={`px-3 py-2 rounded-xl text-xs font-bold border flex items-center gap-1.5 shrink-0 min-h-[38px] transition-colors cursor-pointer ${
+              circleFilter !== 'all' || sortBy !== 'attendance'
+                ? 'bg-teal-700 text-white border-teal-800 shadow-2xs'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+            title="تصفية وخيارات الترتيب"
           >
-            <option value="all">جميع الحلقات ({circles.length})</option>
-            {circles.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.teacherName})
-              </option>
-            ))}
-          </select>
-
-          {/* Sort By Dropdown */}
-          <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/90 rounded-xl px-2.5 py-1.5 min-h-[38px]">
-            <ArrowUpDown className="w-3.5 h-3.5 text-teal-700 shrink-0" />
-            <span className="text-[11px] text-slate-500 font-bold shrink-0">الترتيب:</span>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-transparent text-xs text-teal-900 font-black cursor-pointer focus:outline-hidden"
-            >
-              <option value="attendance">الأكثر حضوراً</option>
-              <option value="absences">الأكثر غياباً (للمتابعة)</option>
-              <option value="rate">أعلى نسبة حضور (%)</option>
-              <option value="points">الأعلى نقاطاً (⭐)</option>
-            </select>
-          </div>
+            <Filter className="w-3.5 h-3.5" />
+            <span>تصفية</span>
+            {(circleFilter !== 'all' || sortBy !== 'attendance') && (
+              <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
+            )}
+          </button>
         </div>
 
-        {/* Filter Quick Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 pt-1 text-xs">
+        {/* Equal-Width Status Segments (الكل / منتظمون / لديهم غياب) without horizontal scrollbar */}
+        <div className="grid grid-cols-3 gap-1.5 w-full text-xs">
           <button
             type="button"
             onClick={() => setStatusFilter('all')}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+            className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
               statusFilter === 'all'
                 ? 'bg-teal-700 text-white border-teal-800 shadow-2xs'
                 : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
             }`}
           >
-            جميع الطلاب ({activeStudents.length})
+            الكل ({activeStudents.length})
           </button>
-
           <button
             type="button"
             onClick={() => setStatusFilter('perfect')}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+            className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
               statusFilter === 'perfect'
                 ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                : 'bg-emerald-50/70 text-emerald-900 border-emerald-200 hover:bg-emerald-100/70'
+                : 'bg-emerald-50/70 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
             }`}
           >
-            <span>منتظمون (90%+)</span>
-            <span className="tabular-nums font-black">({overallStats.perfectStudents})</span>
+            منتظمون ({overallStats.perfectStudents})
           </button>
-
           <button
             type="button"
             onClick={() => setStatusFilter('has_absences')}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+            className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
               statusFilter === 'has_absences'
                 ? 'bg-rose-600 text-white border-rose-700 shadow-2xs'
-                : 'bg-rose-50/70 text-rose-900 border-rose-200 hover:bg-rose-100/70'
+                : 'bg-rose-50/70 text-rose-900 border-rose-200 hover:bg-rose-100'
             }`}
           >
-            <span>لديهم غياب</span>
-            <span className="tabular-nums font-black">({overallStats.studentsWithAbsences})</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setStatusFilter('flagged')}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1 ${
-              statusFilter === 'flagged'
-                ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
-                : 'bg-amber-50/70 text-amber-900 border-amber-200 hover:bg-amber-100/70'
-            }`}
-          >
-            <AlertTriangle className="w-3 h-3 text-amber-600" />
-            <span>يحتاجون متابعة</span>
-            <span className="tabular-nums font-black">({overallStats.flaggedCount})</span>
+            لديهم غياب ({overallStats.studentsWithAbsences})
           </button>
         </div>
       </div>
 
-      {/* 3. Students Ranking Table / Card List */}
+      {/* (7) & (10) Podium: Three Equal-Width Cards (Medal + 2-line Name + Single Number) WITHOUT Text Badges */}
+      {showPodium && (
+        <div className="space-y-2 pt-1 pb-1">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+              <Trophy className="w-4 h-4 text-amber-500" />
+              <span>المراكز الثلاثة الأولى</span>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 w-full items-stretch">
+            {/* Rank 2 (Silver) */}
+            {(() => {
+              const student = podiumStudents[1];
+              const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
+              return (
+                <div
+                  key={student.id}
+                  onClick={() => handleOpenStudentModal(student)}
+                  className="bg-white rounded-xl p-2.5 border border-slate-200/90 hover:border-teal-400 text-center flex flex-col items-center justify-between shadow-2xs cursor-pointer transition-all min-h-[110px]"
+                >
+                  <span className="text-2xl mb-1">🥈</span>
+                  <span className="text-xs font-bold text-slate-900 line-clamp-2 text-center min-h-[2.2rem] leading-snug">
+                    {student.name}
+                  </span>
+                  <span className="text-xs font-black text-teal-800 tabular-nums mt-1">
+                    {getSingleMetricNumber(stats, student)}
+                  </span>
+                </div>
+              );
+            })()}
+
+            {/* Rank 1 (Gold) */}
+            {(() => {
+              const student = podiumStudents[0];
+              const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
+              return (
+                <div
+                  key={student.id}
+                  onClick={() => handleOpenStudentModal(student)}
+                  className="bg-gradient-to-b from-amber-50/70 to-white rounded-xl p-2.5 border-2 border-amber-300 hover:border-amber-400 text-center flex flex-col items-center justify-between shadow-2xs cursor-pointer transition-all min-h-[110px]"
+                >
+                  <span className="text-2xl mb-1">🥇</span>
+                  <span className="text-xs font-black text-slate-900 line-clamp-2 text-center min-h-[2.2rem] leading-snug">
+                    {student.name}
+                  </span>
+                  <span className="text-xs sm:text-sm font-black text-amber-900 tabular-nums mt-1">
+                    {getSingleMetricNumber(stats, student)}
+                  </span>
+                </div>
+              );
+            })()}
+
+            {/* Rank 3 (Bronze) */}
+            {(() => {
+              const student = podiumStudents[2];
+              const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
+              return (
+                <div
+                  key={student.id}
+                  onClick={() => handleOpenStudentModal(student)}
+                  className="bg-white rounded-xl p-2.5 border border-slate-200/90 hover:border-teal-400 text-center flex flex-col items-center justify-between shadow-2xs cursor-pointer transition-all min-h-[110px]"
+                >
+                  <span className="text-2xl mb-1">🥉</span>
+                  <span className="text-xs font-bold text-slate-900 line-clamp-2 text-center min-h-[2.2rem] leading-snug">
+                    {student.name}
+                  </span>
+                  <span className="text-xs font-black text-teal-800 tabular-nums mt-1">
+                    {getSingleMetricNumber(stats, student)}
+                  </span>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* (2) & (3) Student Rows: Name wraps without cut, circle underneath in gray, حضور N · غياب N (no zeroes, no (-)), color rules */}
       {rankedStudents.length === 0 ? (
         <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-400 text-xs font-medium space-y-1">
           <p className="font-bold text-slate-600">لا يوجد طلاب يطابقون شروط البحث أو التصفية الحالية.</p>
-          <p className="text-[11px] text-slate-400">يمكنك تبديل التصفية لعرض «جميع الطلاب» أو تغيير الحلقة.</p>
+          <p className="text-[11px] text-slate-400">يمكنك تبديل التصفية لعرض «الكل» أو تغيير الحلقة.</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {rankedStudents.map((student, index) => {
-            const currentRank = index + 1;
+          {showPodium && listStudents.length > 0 && (
+            <div className="px-1 pt-1 text-xs font-black text-slate-500">
+              قائمة الطلاب ({listStudents.length}):
+            </div>
+          )}
+
+          {paginatedStudents.map((student, index) => {
+            const currentRank = rankOffset + index;
             const circle = circles.find((c) => c.id === student.circleId);
             const flag = getStudentFlag(student);
             const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
@@ -514,99 +535,223 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
               <div
                 key={student.id}
                 onClick={() => handleOpenStudentModal(student)}
-                className={`bg-white rounded-2xl p-3 sm:p-3.5 border shadow-2xs hover:shadow-xs transition-all cursor-pointer flex flex-col gap-2 ${
+                className={`bg-white rounded-xl p-3 border shadow-2xs hover:shadow-xs transition-all cursor-pointer flex items-center justify-between gap-3 select-text ${
                   stats.absentDays >= 3
-                    ? 'border-rose-200/90 bg-rose-50/15'
+                    ? 'border-rose-200/80 bg-rose-50/10'
                     : flag.isFlagged
-                    ? 'border-amber-200/90 bg-amber-50/15'
-                    : currentRank <= 3
-                    ? 'border-amber-300/80 bg-amber-50/10'
+                    ? 'border-amber-200/80 bg-amber-50/10'
                     : 'border-slate-200/90 hover:border-teal-300'
                 }`}
               >
-                <div className="flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
-                  {/* Rank Badge + Student Info */}
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    {getRankBadge(currentRank)}
-
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 truncate">
-                          {student.name}
-                        </h4>
-                        {currentRank === 1 && (
-                          <span className="text-[10px] font-black text-amber-900 bg-amber-200/80 px-2 py-0.2 rounded-full shadow-2xs">
-                            متصدر الحضور
-                          </span>
-                        )}
-                      </div>
-
-                      {circle?.name && (
-                        <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                          <span className="font-bold text-teal-800">{circle.name}</span>
-                          <span> · {circle.teacherName}</span>
-                        </p>
-                      )}
-                    </div>
+                <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                  {/* Rank Badge */}
+                  <div className="w-7 h-7 rounded-full bg-slate-100 border border-slate-200 text-slate-700 flex items-center justify-center font-black text-xs tabular-nums shrink-0 mt-0.5">
+                    #{currentRank}
                   </div>
 
-                  {/* Attendance Days & Absence Days Badges */}
-                  <div className="shrink-0 flex items-center gap-2 self-end sm:self-center">
-                    {/* أيام الحضور */}
-                    <div
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200/90 text-xs font-black tabular-nums shadow-2xs"
-                      title="عدد أيام الحضور المسجلة (رصد المعلم 2 أو 1)"
-                    >
-                      <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span>حضور: {stats.presentDays}</span>
+                  <div className="min-w-0 flex-1">
+                    {/* (2) Student name: full line non-truncated, wraps gracefully */}
+                    <h4 className="text-xs sm:text-sm font-bold text-slate-900 leading-snug break-words">
+                      {student.name}
+                    </h4>
+
+                    {/* (2) Circle name underneath in gray */}
+                    {circle?.name && (
+                      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                        {circle.name}
+                      </p>
+                    )}
+
+                    {/* (2) & (3) «حضور N · غياب N» بخط صغير، دون عرض الصفر ولا (–)، أخضر للحضور الفعلي وأحمر للغياب الفعلي */}
+                    <div className="mt-1 flex items-center gap-1.5 text-[11px] font-bold">
+                      {stats.hasRecords && (stats.presentDays > 0 || stats.absentDays > 0) ? (
+                        <>
+                          {stats.presentDays > 0 && (
+                            <span className="text-emerald-700 font-bold">حضور {stats.presentDays}</span>
+                          )}
+                          {stats.presentDays > 0 && stats.absentDays > 0 && (
+                            <span className="text-slate-300">·</span>
+                          )}
+                          {stats.absentDays > 0 && (
+                            <span className="text-rose-600 font-bold">غياب {stats.absentDays}</span>
+                          )}
+                          {stats.attendanceRate > 0 && (
+                            <span className="text-slate-400 font-medium text-[10px] tabular-nums">
+                              ({stats.attendanceRate}%)
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-slate-400 text-[10px] font-medium">لا يوجد رصد مسجل</span>
+                      )}
                     </div>
 
-                    {/* أيام الغياب */}
-                    <div
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-black tabular-nums shadow-2xs border ${
-                        stats.absentDays > 0
-                          ? 'bg-rose-50 text-rose-800 border-rose-200/90'
-                          : 'bg-slate-50 text-slate-600 border-slate-200/90'
-                      }`}
-                      title="عدد أيام الغياب المسجلة (رصد المعلم 0)"
-                    >
-                      <UserX
-                        className={`w-3.5 h-3.5 shrink-0 ${
-                          stats.absentDays > 0 ? 'text-rose-600' : 'text-slate-400'
-                        }`}
-                      />
-                      <span>غياب: {stats.absentDays}</span>
-                    </div>
-
-                    {/* نسبة الحضور */}
-                    <div className="text-[11px] font-extrabold text-slate-500 tabular-nums">
-                      ({stats.hasRecords ? `${stats.attendanceRate}%` : '—'})
-                    </div>
-
-                    {/* الرصيد التراكمي */}
-                    <div className="text-xs font-black text-teal-900 tabular-nums pr-1">
-                      ⭐ {student.currentPoints}
-                    </div>
+                    {flag.isFlagged && (
+                      <div className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-md">
+                        <span>⚠️</span>
+                        <span>{flag.label}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* Flag Bar if student has special attention warning */}
-                {flag.isFlagged && (
-                  <div className="bg-amber-50/80 px-2.5 py-1 rounded-xl border border-amber-200/80 text-[11px] font-bold text-amber-900 flex items-center gap-1.5">
-                    <span className="text-amber-700 shrink-0">⚠️ تنبيه متابعة:</span>
-                    <span className="truncate">{flag.label}</span>
-                  </div>
-                )}
+                {/* Inspect Action */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleOpenStudentModal(student);
+                  }}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-teal-700 hover:bg-slate-50 shrink-0 cursor-pointer"
+                  title="عرض بيانات الطالب"
+                >
+                  <Eye className="w-4 h-4" />
+                </button>
               </div>
             );
           })}
+
+          {/* (9) Pagination: Show 20 initially with «عرض المزيد» */}
+          {listStudents.length > visibleCount && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount((prev) => prev + 20)}
+              className="w-full py-2.5 rounded-xl bg-white border border-slate-200 text-teal-800 text-xs font-bold hover:bg-slate-50 shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors mt-2"
+            >
+              <span>عرض المزيد ({listStudents.length - visibleCount} طالب متبقٍ)</span>
+              <ChevronDown className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       )}
 
-      {/* 4. STUDENT DETAIL MODAL */}
+      {/* (6) Bottom Sheet for Filters: Circle, Sort Order, Status */}
+      {isFilterSheetOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl max-w-md w-full border border-slate-200 shadow-2xl p-5 space-y-4 text-right animate-slide-up">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-black text-slate-900 flex items-center gap-1.5">
+                <Filter className="w-4 h-4 text-teal-700" />
+                <span>خيارات التصفية والترتيب</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsFilterSheetOpen(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Circle Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-extrabold text-slate-700 block">
+                تصفية حسب الحلقة القرآنية:
+              </label>
+              <select
+                value={circleFilter}
+                onChange={(e) => setCircleFilter(e.target.value)}
+                className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold min-h-[38px] shadow-2xs cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600"
+              >
+                <option value="all">جميع الحلقات ({circles.length})</option>
+                {circles.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.teacherName})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Sort By Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-extrabold text-slate-700 block">
+                ترتيب الطلاب حسب:
+              </label>
+              <div className="relative">
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as any)}
+                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 text-teal-900 font-bold min-h-[38px] shadow-2xs cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600"
+                >
+                  <option value="attendance">الأكثر حضوراً</option>
+                  <option value="absences">الأكثر غياباً (للمتابعة)</option>
+                  <option value="rate">أعلى نسبة حضور (%)</option>
+                  <option value="points">الأعلى نقاطاً</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Status Filter Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-extrabold text-slate-700 block">
+                الحالة:
+              </label>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('all')}
+                  className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    statusFilter === 'all'
+                      ? 'bg-teal-700 text-white border-teal-800 shadow-2xs'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  الكل
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('perfect')}
+                  className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    statusFilter === 'perfect'
+                      ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                      : 'bg-emerald-50/70 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
+                  }`}
+                >
+                  منتظمون
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('has_absences')}
+                  className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    statusFilter === 'has_absences'
+                      ? 'bg-rose-600 text-white border-rose-700 shadow-2xs'
+                      : 'bg-rose-50/70 text-rose-900 border-rose-200 hover:bg-rose-100'
+                  }`}
+                >
+                  لديهم غياب
+                </button>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="pt-2 flex items-center gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setCircleFilter('all');
+                  setSortBy('attendance');
+                  setStatusFilter('all');
+                }}
+                className="px-3 py-2.5 rounded-xl bg-slate-100 text-slate-700 font-bold text-xs hover:bg-slate-200 transition-colors cursor-pointer"
+              >
+                إعادة ضبط
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsFilterSheetOpen(false)}
+                className="flex-1 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs"
+              >
+                تطبيق الفلاتر
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Student Detail Modal */}
       {selectedStudent && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[88vh] overflow-y-auto border border-slate-200 shadow-2xl p-5 space-y-4 text-right relative">
+          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[88vh] overflow-y-auto border border-slate-200 shadow-2xl p-5 space-y-4 text-right relative select-text">
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
@@ -630,18 +775,18 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
               </button>
             </div>
 
-            {/* Attendance & Points Summary Card */}
+            {/* Attendance Summary Card (3 columns) */}
             {(() => {
               const mStats = repository.getStudentAttendanceStats(selectedStudent.id);
               const circle = circles.find((c) => c.id === selectedStudent.circleId);
 
               return (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs font-bold">
+                <div className="grid grid-cols-3 gap-2 text-center text-xs font-bold">
                   {/* عدد أيام الحضور */}
                   <div className="bg-emerald-50/80 p-2.5 rounded-2xl border border-emerald-200/90">
                     <span className="text-[10px] text-emerald-800 block font-bold">أيام الحضور</span>
                     <span className="text-sm font-black text-emerald-950 block mt-0.5 tabular-nums">
-                      {mStats.presentDays} يوم
+                      {mStats.presentDays > 0 ? `${mStats.presentDays} يوم` : '0'}
                     </span>
                     <span className="text-[9px] text-emerald-700 font-medium block">
                       رصد (2 أو 1)
@@ -652,7 +797,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                   <div className="bg-rose-50/80 p-2.5 rounded-2xl border border-rose-200/90">
                     <span className="text-[10px] text-rose-800 block font-bold">أيام الغياب</span>
                     <span className="text-sm font-black text-rose-950 block mt-0.5 tabular-nums">
-                      {mStats.absentDays} يوم
+                      {mStats.absentDays > 0 ? `${mStats.absentDays} يوم` : '0'}
                     </span>
                     <span className="text-[9px] text-rose-700 font-medium block">
                       رصد (0)
@@ -668,15 +813,6 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                     <span className="text-[9px] text-slate-500 font-medium block truncate">
                       {circle?.name || 'عامة'}
                     </span>
-                  </div>
-
-                  {/* الرصيد التراكمي */}
-                  <div className="bg-teal-50/70 p-2.5 rounded-2xl border border-teal-200">
-                    <span className="text-[10px] text-teal-700 block font-bold">الرصيد التراكمي</span>
-                    <span className="text-sm font-black text-teal-950 block mt-0.5 tabular-nums">
-                      ⭐ {selectedStudent.currentPoints}
-                    </span>
-                    <span className="text-[9px] text-teal-600 block mt-0.5 font-medium">نقطة</span>
                   </div>
                 </div>
               );
@@ -872,76 +1008,6 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                 </div>
               </div>
             </div>
-
-            {/* Student Past Days Evaluation and Points History Log */}
-            {(() => {
-              const studentTxs = repository.getTransactions({ studentId: selectedStudent.id });
-              const studentEvals = repository.getEvaluationsHistory(selectedStudent.id);
-              const pastDailyGroups = groupTransactionsByDay(studentTxs, studentEvals);
-
-              return (
-                <div className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-2xs space-y-2.5">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <div className="flex items-center gap-1.5">
-                      <Sparkles className="w-4 h-4 text-amber-500" />
-                      <h4 className="text-xs font-black text-slate-900">
-                        سجل النقاط والتقييم للأيام السابقة
-                      </h4>
-                    </div>
-                    <span className="text-[11px] font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded-md border border-teal-200 tabular-nums">
-                      إجمالي {selectedStudent.currentPoints} نقطة ({pastDailyGroups.length} أيام)
-                    </span>
-                  </div>
-
-                  {pastDailyGroups.length === 0 ? (
-                    <div className="text-center py-4 text-xs text-slate-400">
-                      لا توجد تقييمات مسجلة للطالب في الأيام السابقة بعد.
-                    </div>
-                  ) : (
-                    <div className="space-y-2 max-h-52 overflow-y-auto pl-1">
-                      {pastDailyGroups.map((grp) => (
-                        <div
-                          key={grp.dateKey}
-                          className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2 text-xs"
-                        >
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-slate-800">
-                                {grp.dayLabel === 'اليوم'
-                                  ? `اليوم (${grp.arabicDayName})`
-                                  : grp.dayLabel === 'أمس'
-                                  ? `أمس (${grp.arabicDayName})`
-                                  : grp.arabicDayName}
-                              </span>
-                              <span className="text-[11px] text-slate-400 tabular-nums">
-                                {grp.dateKey}
-                              </span>
-                            </div>
-                            <div className="text-[11px] text-slate-500 mt-0.5 font-medium">
-                              {grp.conciseSummary}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col items-end shrink-0">
-                            <span
-                              dir="ltr"
-                              className={`font-black tabular-nums ${
-                                grp.totalPoints > 0 ? 'text-emerald-700' : 'text-slate-500'
-                              }`}
-                            >
-                              {grp.totalPoints > 0 ? `+${grp.totalPoints}` : grp.totalPoints} ن
-                            </span>
-                            <span className="text-[10px] font-bold text-teal-800 bg-teal-50 px-1.5 py-0.5 rounded-md border border-teal-200/80 mt-0.5 tabular-nums">
-                              التراكمي: {grp.cumulativePointsSoFar} ن
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
 
             {/* Follow-up Note Section */}
             <div className="space-y-2 pt-1 border-t border-slate-100">

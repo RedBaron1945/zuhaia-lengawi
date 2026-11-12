@@ -79,7 +79,7 @@ export const RewardsCatalog: React.FC<RewardsCatalogProps> = ({ student, onRedee
                   </div>
                   <div className="flex flex-col items-end">
                     <span className="text-base font-extrabold text-teal-900 tabular-nums flex items-center gap-1">
-                      ⭐ {reward.costPoints}
+                      {reward.costPoints}
                       <span className="text-xs font-bold text-slate-500">نقطة</span>
                     </span>
                   </div>

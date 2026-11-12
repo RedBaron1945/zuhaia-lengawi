@@ -22,7 +22,7 @@ const AUTH_STORAGE_KEY = 'tartil_auth_user_v2';
 const createSupervisorUser = (email?: string, id?: string): User => ({
   id: id || SUPERVISOR_UID,
   email: email || '',
-  name: 'الشيخ عبدالله بري',
+  name: 'مدير المجمع',
   role: 'supervisor',
   createdAt: '2026-10-28T00:00:00Z',
 });
@@ -39,7 +39,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.role === 'supervisor') {
+          parsed.name = 'مدير المجمع';
+        }
+        return parsed;
+      }
     } catch (e) {
       console.error('Failed to load session:', e);
     }
@@ -88,7 +94,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
 
-        // Check if user has registered role in Firestore
+        // Check if user has registered role in Firestore (Skip for anonymous auth sessions to save reads)
+        if (firebaseUser.isAnonymous) {
+          return;
+        }
+
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (userDoc.exists()) {

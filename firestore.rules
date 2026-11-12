@@ -121,6 +121,19 @@ service cloud.firestore {
       allow delete: if isSupervisor() || isTechSupport();
     }
 
+    // 12. ترشيحات الاختبار
+    match /exam_nominations/{nominationId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    // 13. تذاكر الدعم الفني (الإنشاء متاح لأي زائر مسجّل، والإدارة للمشرف والدعم)
+    match /support_tickets/{ticketId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isSupervisor() || isTechSupport();
+    }
+
     // إغلاق أي مسارات أخرى غير محددة
     match /{document=**} {
       allow read, write: if false;

@@ -11,9 +11,12 @@ import {
   ChevronDown,
   ChevronUp,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { formatHijriDate } from '../../utils/dateUtils';
 import { groupTransactionsByDay, DailyPointsGroup } from '../../utils/pointUtils';
+import { ConfirmationModal } from '../common/ConfirmationModal';
+import { useToast } from '../../context/ToastContext';
 
 interface StudentHistoryProps {
   studentId: string;
@@ -22,6 +25,8 @@ interface StudentHistoryProps {
 export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => {
   const [activeTab, setActiveTab] = useState<'points' | 'rewards'>('points');
   const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
+  const [deleteConfirmReq, setDeleteConfirmReq] = useState<RedemptionRequest | null>(null);
+  const { showToast } = useToast();
 
   const student = repository.getStudentById(studentId);
   const transactions = repository.getTransactions({ studentId });
@@ -300,7 +305,7 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
                       {/* Checkpoint banner showing running cumulative balance */}
                       <div className="flex items-center justify-between text-xs font-bold bg-teal-50/80 text-teal-950 px-3 py-1.5 rounded-xl border border-teal-200/80 mb-2.5">
                         <span>الرصيد التراكمي المحقق حتى هذا اليوم:</span>
-                        <span className="font-black tabular-nums">⭐ {group.cumulativePointsSoFar} نقطة</span>
+                        <span className="font-black tabular-nums">{group.cumulativePointsSoFar} نقطة</span>
                       </div>
 
                       {/* Section 1: Daily evaluation out of 10 with 5 criteria rows */}
@@ -432,11 +437,21 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
                     <div>
                       <h4 className="text-sm font-bold text-slate-900">{req.rewardTitle}</h4>
                       <p className="text-xs font-semibold text-teal-800 mt-0.5 tabular-nums">
-                        ⭐ {req.rewardCost} نقطة
+                        {req.rewardCost} نقطة
                       </p>
                     </div>
                   </div>
-                  <div>{getStatusBadge(req.status)}</div>
+                  <div className="flex items-center gap-1.5">
+                    {getStatusBadge(req.status)}
+                    <button
+                      onClick={() => setDeleteConfirmReq(req)}
+                      title="حذف المطالبة من السجل"
+                      aria-label="حذف المطالبة"
+                      className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition-all cursor-pointer border border-transparent hover:border-rose-100"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
@@ -456,6 +471,30 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
             ))
           )}
         </div>
+      )}
+
+      {/* Delete / X Confirmation Modal */}
+      {deleteConfirmReq && (
+        <ConfirmationModal
+          isOpen={!!deleteConfirmReq}
+          onClose={() => setDeleteConfirmReq(null)}
+          onConfirm={() => {
+            const res = repository.deleteRedemptionRequest(deleteConfirmReq.id, student?.name || 'الطالب');
+            if (res.success) {
+              showToast(res.message, 'info');
+              setDeleteConfirmReq(null);
+            }
+          }}
+          title="حذف المطالبة من السجل"
+          message={`هل أنت متأكد من حذف مطالبة (${deleteConfirmReq.rewardTitle}) من السجل؟${
+            deleteConfirmReq.status === 'pending' && !deleteConfirmReq.refunded
+              ? ` سيتم استرداد (${deleteConfirmReq.rewardCost} نقطة) تلقائياً لرصيدك.`
+              : ''
+          }`}
+          confirmText="نعم، حذف"
+          cancelText="إلغاء"
+          type="danger"
+        />
       )}
     </div>
   );

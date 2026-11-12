@@ -201,6 +201,7 @@ export interface Achievement {
   requiredPoints?: number;
   requiredStreak?: number;
   unlockedAt?: string;
+  currentValue?: number;
 }
 
 export interface StudentAttendanceStats {
@@ -210,5 +211,78 @@ export interface StudentAttendanceStats {
   totalSessions: number;
   attendanceRate: number; // percentage 0-100
   hasRecords: boolean;
+  streakDays: number;
+  maxStreakDays: number;
+  consecutiveAbsences: number;
+}
+
+export type ExamNominationStatus = 'pending' | 'completed' | 'cancelled';
+
+export interface ExamBranchOption {
+  branchNumber: number;
+  partsCount: number;
+  title: string;
+  partsText: string;
+}
+
+export const EXAM_BRANCHES: ExamBranchOption[] = [
+  { branchNumber: 1, partsCount: 1, title: 'الفرع الأول - جزء واحد', partsText: 'جزء واحد' },
+  { branchNumber: 2, partsCount: 2, title: 'الفرع الثاني - جزئين', partsText: 'جزئين' },
+  { branchNumber: 3, partsCount: 3, title: 'الفرع الثالث - 3 أجزاء', partsText: '3 أجزاء' },
+  { branchNumber: 4, partsCount: 5, title: 'الفرع الرابع - 5 أجزاء', partsText: '5 أجزاء' },
+  { branchNumber: 5, partsCount: 10, title: 'الفرع الخامس - 10 أجزاء', partsText: '10 أجزاء' },
+  { branchNumber: 6, partsCount: 13, title: 'الفرع السادس - 13 جزء', partsText: '13 جزء' },
+  { branchNumber: 7, partsCount: 15, title: 'الفرع السابع - 15 جزء', partsText: '15 جزء' },
+  { branchNumber: 8, partsCount: 20, title: 'الفرع الثامن - 20 جزء', partsText: '20 جزء' },
+  { branchNumber: 9, partsCount: 25, title: 'الفرع التاسع - 25 جزء', partsText: '25 جزء' },
+  { branchNumber: 10, partsCount: 30, title: 'الفرع العاشر - 30 جزء', partsText: '30 جزء' },
+];
+
+export const getBranchByPartsCount = (count: number): ExamBranchOption => {
+  return (
+    EXAM_BRANCHES.find((b) => b.partsCount === count) || {
+      branchNumber: 0,
+      partsCount: count,
+      title: `اختبار ${count} أجزاء`,
+      partsText: `${count} أجزاء`,
+    }
+  );
+};
+
+export interface ExamNomination {
+  id: string;
+  studentId: string;
+  studentName: string;
+  circleId: string;
+  circleName: string;
+  teacherId: string;
+  teacherName: string;
+  partsCount: number; // e.g. 1, 2, 3, 5, 10, 13, 15, 20, 25, 30
+  partsDescription?: string; // e.g., 'الفرع الأول - جزء واحد'
+  notes?: string;
+  status: ExamNominationStatus;
+  requestDate: string; // YYYY-MM-DD
+  createdAt: string; // ISO string
+  updatedAt?: string;
+  completedAt?: string;
+  handledBy?: string; // e.g. 'مدير المجمع'
+  cancellationReason?: string;
+}
+
+export type SupportTicketType = 'مشكلة' | 'اقتراح' | 'استفسار' | 'أخرى..';
+export type SupportTicketPriority = 'high' | 'medium' | 'low';
+
+export interface SupportTicket {
+  id: string;
+  ticketType: SupportTicketType;
+  priority: SupportTicketPriority;
+  message: string;
+  senderName: string;
+  senderRole?: Role | 'guest';
+  senderPhone?: string;
+  senderEmail?: string;
+  senderId?: string;
+  createdAt: string; // ISO string
+  status: 'new' | 'in_progress' | 'resolved';
 }
 

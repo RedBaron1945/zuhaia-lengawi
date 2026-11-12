@@ -241,7 +241,13 @@ export const LoginView: React.FC = () => {
               </button>
             </div>
           </form>
+        </div>
 
+        {/* Footer text */}
+        <div className="mt-4 text-center">
+          <p className="text-[11px] text-white/60 font-medium tabular-nums">
+            منصة حلقات زهية لنجاوي © 2026
+          </p>
         </div>
       </div>
     </div>

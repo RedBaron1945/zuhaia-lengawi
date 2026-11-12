@@ -5,15 +5,16 @@ import { StudentsManagement } from './StudentsManagement';
 import { RewardsManagement } from './RewardsManagement';
 import { PointRulesSettings } from './PointRulesSettings';
 import { AuditLogView } from './AuditLogView';
+import { SupportTicketsManager } from './SupportTicketsManager';
 import { BottomNav } from '../common/BottomNav';
-import { Cog, Users, Gift, Settings, ShieldCheck, Award } from 'lucide-react';
+import { Cog, Users, Gift, Settings, ShieldCheck, Award, LifeBuoy } from 'lucide-react';
 
 interface AdminViewProps {
   currentUser: User;
 }
 
 export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
-  const [activeTab, setActiveTab] = useState<'students' | 'points' | 'rewards_mgmt' | 'settings' | 'audit'>('students');
+  const [activeTab, setActiveTab] = useState<'students' | 'points' | 'rewards_mgmt' | 'tickets' | 'settings' | 'audit'>('students');
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -22,6 +23,8 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
     });
     return unsub;
   }, []);
+
+  const tickets = repository.getSupportTickets();
 
   return (
     <div className="pb-24 max-w-4xl mx-auto px-3 sm:px-4 pt-3">
@@ -83,6 +86,20 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
           <span>إدارة المكافآت</span>
         </button>
         <button
+          onClick={() => setActiveTab('tickets')}
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+            activeTab === 'tickets' ? 'bg-indigo-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <LifeBuoy className="w-4 h-4" />
+          <span>تذاكر الدعم</span>
+          {tickets.length > 0 && (
+            <span className="bg-amber-400 text-amber-950 text-[10px] px-1.5 py-0.2 rounded-full font-black tabular-nums">
+              {tickets.length}
+            </span>
+          )}
+        </button>
+        <button
           onClick={() => setActiveTab('settings')}
           className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
             activeTab === 'settings' ? 'bg-indigo-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
@@ -109,13 +126,19 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
       {activeTab === 'rewards_mgmt' && (
         <RewardsManagement adminUser={currentUser} onUpdate={() => setTick((t) => t + 1)} />
       )}
+      {activeTab === 'tickets' && <SupportTicketsManager />}
       {activeTab === 'settings' && (
         <PointRulesSettings adminUser={currentUser} onUpdate={() => setTick((t) => t + 1)} />
       )}
       {activeTab === 'audit' && <AuditLogView />}
 
       {/* Mobile Bottom Navigation */}
-      <BottomNav role="admin" activeTab={activeTab} onTabChange={(t) => setActiveTab(t as any)} />
+      <BottomNav
+        role="admin"
+        activeTab={activeTab}
+        onTabChange={(t) => setActiveTab(t as any)}
+        badges={{ tickets: tickets.length }}
+      />
     </div>
   );
 };

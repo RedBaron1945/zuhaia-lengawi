@@ -81,7 +81,7 @@ export const AttendanceModal: React.FC<AttendanceModalProps> = ({
           <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/80 flex items-center justify-between">
             <div>
               <h4 className="text-sm font-extrabold text-slate-900">{student.name}</h4>
-              <span className="text-xs text-slate-500">الرصيد: ⭐ {student.currentPoints} نقطة</span>
+              <span className="text-xs text-slate-500">الرصيد: {student.currentPoints} نقطة</span>
             </div>
             <div className="text-left text-[11px] text-slate-500">
               <span className="block font-medium">{today}</span>

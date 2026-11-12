@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Reward, User } from '../../types';
-import { repository } from '../../services/storageService';
+import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import { ConfirmationModal } from '../common/ConfirmationModal';
 import { Gift, Plus, Edit2, Trash2, Power, X, Sparkles } from 'lucide-react';
@@ -15,6 +15,13 @@ export const RewardsManagement: React.FC<RewardsManagementProps> = ({ adminUser,
   const [editingReward, setEditingReward] = useState<Reward | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<Reward | null>(null);
+
+  useEffect(() => {
+    const unsub = subscribeToDataChanges(() => {
+      setRewards(repository.getRewards());
+    });
+    return unsub;
+  }, []);
 
   // Form states
   const [title, setTitle] = useState('');
@@ -131,7 +138,7 @@ export const RewardsManagement: React.FC<RewardsManagementProps> = ({ adminUser,
                   <div>
                     <h4 className="text-sm font-extrabold text-slate-900">{reward.title}</h4>
                     <span className="text-xs font-black text-teal-800 tabular-nums">
-                      ⭐ {reward.costPoints} نقطة
+                      {reward.costPoints} نقطة
                     </span>
                   </div>
                 </div>
@@ -170,20 +177,22 @@ export const RewardsManagement: React.FC<RewardsManagementProps> = ({ adminUser,
                 <span>{reward.available ? 'تعطيل الاسترداد' : 'تفعيل'}</span>
               </button>
 
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => handleOpenEdit(reward)}
-                  className="p-2 text-slate-500 hover:text-indigo-700 hover:bg-slate-100 rounded-lg min-h-[36px] min-w-[36px] flex items-center justify-center"
+                  className="px-2.5 py-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50/70 hover:bg-indigo-100 border border-indigo-100 rounded-lg min-h-[34px] flex items-center gap-1 text-xs font-bold cursor-pointer transition-colors"
                   title="تعديل المكافأة"
                 >
-                  <Edit2 className="w-4 h-4" />
+                  <Edit2 className="w-3.5 h-3.5" />
+                  <span>تعديل</span>
                 </button>
                 <button
                   onClick={() => setDeleteCandidate(reward)}
-                  className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg min-h-[36px] min-w-[36px] flex items-center justify-center"
+                  className="px-2.5 py-1.5 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg min-h-[34px] flex items-center gap-1 text-xs font-bold cursor-pointer transition-colors"
                   title="حذف المكافأة"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>حذف</span>
                 </button>
               </div>
             </div>

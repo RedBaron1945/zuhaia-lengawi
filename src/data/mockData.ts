@@ -181,7 +181,7 @@ export const INITIAL_USERS: User[] = [
   {
     id: SUPERVISOR_UID,
     email: '',
-    name: 'الشيخ عبدالله بري',
+    name: 'مدير المجمع',
     role: 'supervisor',
     createdAt: '2026-10-28T00:00:00Z',
   },

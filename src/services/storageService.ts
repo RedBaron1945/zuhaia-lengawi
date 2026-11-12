@@ -12,6 +12,11 @@ import {
   EvaluationRecord,
   Role,
   StudentAttendanceStats,
+  ExamNomination,
+  ExamNominationStatus,
+  SupportTicket,
+  SupportTicketType,
+  SupportTicketPriority,
 } from '../types';
 import {
   INITIAL_STUDENTS,
@@ -26,7 +31,7 @@ import {
   INITIAL_EVALUATIONS,
   normalizeCircleId,
 } from '../data/mockData';
-import { getArabicDayName } from '../utils/dateUtils';
+import { getArabicDayName, isCircleDay } from '../utils/dateUtils';
 import { db, auth } from '../lib/firebase';
 import {
   collection,
@@ -52,6 +57,8 @@ const STORAGE_KEYS = {
   ACHIEVEMENTS: 'tartil_achievements_v2',
   CURRENT_USER: 'tartil_current_user_v2',
   PURGED_MOCK: 'tartil_mock_purged_flag_v2',
+  EXAM_NOMINATIONS: 'tartil_exam_nominations_v2',
+  SUPPORT_TICKETS: 'tartil_support_tickets_v1',
 };
 
 // Auto-purge any legacy mock data from browser localStorage once
@@ -200,12 +207,14 @@ function sanitizeForFirestore<T>(data: T): Record<string, any> {
 
 // In-memory cache of synced items to eliminate redundant writes and downstream read cycles
 const syncedHashes = new Map<string, string>();
+const deletedDocIds = new Set<string>();
 
 // Asynchronous Firestore Sync Helpers
 async function syncToFirestore<T extends { id: string }>(collectionName: string, item: T) {
   try {
     if (!item?.id) return;
     const docKey = `${collectionName}_${item.id}`;
+    deletedDocIds.delete(item.id);
     const sanitized = sanitizeForFirestore(item);
     const serialized = JSON.stringify(sanitized);
     if (syncedHashes.get(docKey) === serialized) {
@@ -218,7 +227,7 @@ async function syncToFirestore<T extends { id: string }>(collectionName: string,
       pendingWritesCount: currentSyncStatus.pendingWritesCount + 1,
     });
 
-    await setDoc(doc(db, collectionName, item.id), sanitized, { merge: true });
+    await setDoc(doc(db, collectionName, item.id), sanitized);
     syncedHashes.set(docKey, serialized);
 
     updateSyncState({
@@ -240,13 +249,15 @@ async function syncToFirestore<T extends { id: string }>(collectionName: string,
 async function deleteFromFirestore(collectionName: string, id: string) {
   try {
     if (!id) return;
+    deletedDocIds.add(id);
+    syncedHashes.delete(`${collectionName}_${id}`);
+
     updateSyncState({
       status: 'syncing',
       pendingWritesCount: currentSyncStatus.pendingWritesCount + 1,
     });
 
     await deleteDoc(doc(db, collectionName, id));
-    syncedHashes.delete(`${collectionName}_${id}`);
 
     updateSyncState({
       status: 'connected',
@@ -324,7 +335,7 @@ export interface IRepository {
     }
   ): { success: boolean; message: string; pointsAwarded: number; duplicate?: boolean };
   getAttendanceHistory(circleId?: string, date?: string): AttendanceRecord[];
-  getStudentAttendanceStats(studentId: string): StudentAttendanceStats;
+  getStudentAttendanceStats(studentId: string, period?: 'week' | 'month' | 'all'): StudentAttendanceStats;
 
 
   // Evaluations
@@ -347,12 +358,12 @@ export interface IRepository {
     studentId: string;
     circleId: string;
     date: string;
-    dayName: string;
-    attendance: 'early' | 'late' | 'absent';
-    disciplineScore: number;
-    uniformScore: number;
-    memorizationScore: number;
-    revisionScore: number;
+    dayName?: string;
+    attendance?: 'early' | 'late' | 'absent' | null;
+    disciplineScore?: number | null;
+    uniformScore?: number | null;
+    memorizationScore?: number | null;
+    revisionScore?: number | null;
     familyMeetingScore?: number;
     notes?: string;
     teacherName: string;
@@ -388,6 +399,7 @@ export interface IRepository {
       refundPoints?: boolean;
     }
   ): { success: boolean; message: string };
+  deleteRedemptionRequest(requestId: string, handledBy?: string): { success: boolean; message: string };
 
   // Rules & Settings
   getPointRules(): PointRules;
@@ -396,13 +408,47 @@ export interface IRepository {
   // Audit Logs & Achievements
   getAuditLogs(): AuditLog[];
   addAuditLog(log: Omit<AuditLog, 'id' | 'timestamp'>): void;
+  deleteAuditLog(logId: string): { success: boolean; message: string };
+  clearAllAuditLogs(): { success: boolean; message: string };
   getAchievements(studentId?: string): Achievement[];
+
+  // Exam Nominations (ترشيح للاختبار)
+  getExamNominations(filter?: { circleId?: string; status?: string; studentId?: string }): ExamNomination[];
+  createExamNominations(
+    nominations: Array<{
+      studentId: string;
+      studentName: string;
+      circleId: string;
+      circleName: string;
+      teacherId: string;
+      teacherName: string;
+      partsCount: number;
+      partsDescription?: string;
+      notes?: string;
+    }>
+  ): { success: boolean; message: string; count: number };
+  updateExamNominationStatus(params: {
+    nominationId: string;
+    status: ExamNominationStatus;
+    handledBy: string;
+    cancellationReason?: string;
+  }): { success: boolean; message: string };
+  deleteExamNomination(nominationId: string, handledBy?: string): { success: boolean; message: string };
+
+  // Support Tickets (الدعم الفني)
+  getSupportTickets(): SupportTicket[];
+  createSupportTicket(ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'status' | 'priority'> & { priority?: SupportTicketPriority }): { success: boolean; message: string; ticket: SupportTicket };
+  updateSupportTicket(ticketId: string, updates: Partial<Pick<SupportTicket, 'priority' | 'status'>>): { success: boolean; message: string };
+  deleteSupportTicket(ticketId: string): { success: boolean; message: string };
 
   // Reset
   resetToDefaults(): void;
 }
 
 class FirestoreConnectedRepository implements IRepository {
+  private listenersInitialized = false;
+  private unsubscribers: (() => void)[] = [];
+
   constructor() {
     this.reconcileStudentPointsFromTransactions();
     this.reconcileStudentAttendance();
@@ -414,38 +460,8 @@ class FirestoreConnectedRepository implements IRepository {
   private async seedInitialDataIfEmpty() {
     if (typeof localStorage === 'undefined') return;
     const SEED_KEY = 'tartil_firestore_seeded_zuhaia_v4';
-    if (localStorage.getItem(SEED_KEY)) return;
-
-    try {
-      const rulesCheck = await getDoc(doc(db, 'rules', 'default_rules'));
-      if (!rulesCheck.exists()) {
-        updateSyncState({ status: 'syncing' });
-        await setDoc(doc(db, 'rules', 'default_rules'), sanitizeForFirestore({ id: 'default_rules', ...INITIAL_POINT_RULES }), { merge: true });
-        for (const c of INITIAL_CIRCLES) {
-          await setDoc(doc(db, 'circles', c.id), sanitizeForFirestore(c), { merge: true });
-        }
-        for (const t of INITIAL_TEACHERS) {
-          await setDoc(doc(db, 'teachers', t.id), sanitizeForFirestore(t), { merge: true });
-        }
-        for (const s of INITIAL_STUDENTS) {
-          await setDoc(doc(db, 'students', s.id), sanitizeForFirestore(s), { merge: true });
-        }
-        for (const r of INITIAL_REWARDS) {
-          await setDoc(doc(db, 'rewards', r.id), sanitizeForFirestore(r), { merge: true });
-        }
-        for (const e of INITIAL_EVALUATIONS) {
-          await setDoc(doc(db, 'evaluations', e.id), sanitizeForFirestore(e), { merge: true });
-        }
-        for (const tx of INITIAL_TRANSACTIONS) {
-          await setDoc(doc(db, 'transactions', tx.id), sanitizeForFirestore(tx), { merge: true });
-        }
-        localStorage.setItem(SEED_KEY, 'true');
-        updateSyncState({ status: 'connected', lastUpdated: new Date() });
-      } else {
-        localStorage.setItem(SEED_KEY, 'true');
-      }
-    } catch (e) {
-      console.warn('Initial Firestore seeding notice:', e);
+    if (!localStorage.getItem(SEED_KEY)) {
+      localStorage.setItem(SEED_KEY, 'true');
     }
   }
 
@@ -488,55 +504,120 @@ class FirestoreConnectedRepository implements IRepository {
 
         const isEval =
           tx.idempotencyKey?.includes('daily_eval') ||
-          tx.reason?.startsWith('تقييم يوم');
+          tx.id?.includes('eval') ||
+          tx.reason?.includes('تقييم') ||
+          tx.reason?.startsWith('تقييم يوم') ||
+          tx.reason?.startsWith('إلغاء وحذف تقييم يوم');
 
-        if (isEval && tx.studentId && tx.date) {
-          const key = `${tx.studentId}_${tx.date}`;
-          const list = evalMap.get(key) || [];
-          list.push(tx);
-          evalMap.set(key, list);
+        if (isEval && tx.studentId) {
+          let dateStr = tx.date;
+          if (!dateStr && tx.idempotencyKey) {
+            const m = tx.idempotencyKey.match(/\d{4}-\d{2}-\d{2}/);
+            if (m) dateStr = m[0];
+          }
+          if (!dateStr && tx.id) {
+            const m = tx.id.match(/\d{4}-\d{2}-\d{2}/);
+            if (m) dateStr = m[0];
+          }
+          if (!dateStr && tx.reason) {
+            const m = tx.reason.match(/\d{4}-\d{2}-\d{2}/);
+            if (m) dateStr = m[0];
+          }
+          if (dateStr) {
+            if (dateStr.includes('T')) dateStr = dateStr.split('T')[0];
+            const key = `${tx.studentId}_${dateStr}`;
+            const list = evalMap.get(key) || [];
+            list.push(tx);
+            evalMap.set(key, list);
+          } else {
+            // Orphan evaluation transaction with no identifiable date
+            txModified = true;
+          }
         } else {
           otherTxs.push(tx);
         }
       });
 
       const consolidatedTxs: PointTransaction[] = [...otherTxs];
+
+      // Process evaluation transaction groups:
+      // An evaluation transaction is strictly valid ONLY if an active EvaluationRecord exists in `evals` with points > 0!
       evalMap.forEach((list, groupKey) => {
-        if (list.length === 1) {
-          consolidatedTxs.push(list[0]);
-        } else {
+        const [sId, dKey] = groupKey.split('_');
+        const matchingEval = evals.find((e) => e.studentId === sId && e.date === dKey);
+
+        const evalScore = matchingEval
+          ? typeof matchingEval.totalPoints === 'number'
+            ? matchingEval.totalPoints
+            : matchingEval.pointsAwarded || 0
+          : 0;
+
+        // If no evaluation record exists in evals or points are 0, skip
+        if (!matchingEval || evalScore <= 0) {
           txModified = true;
-          const [sId, dKey] = groupKey.split('_');
-          const accurateDay = getArabicDayName(dKey);
-          const totalPoints = list.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-          const latest = list[0];
-          const matchingEval = evals.find((e) => e.studentId === sId && e.date === dKey);
+          return;
+        }
 
-          let reason = latest.reason;
-          if (matchingEval) {
-            const att =
-              matchingEval.attendance === 'early'
-                ? 'مبكر (2ن)'
-                : matchingEval.attendance === 'late'
-                ? 'متأخر (1ن)'
-                : 'غائب (0ن)';
-            reason = `تقييم يوم ${accurateDay} (${dKey}): حضور ${att}، حفظ ${matchingEval.memorizationScore || 0}ن، مراجعة ${matchingEval.revisionScore || 0}ن، انضباط ${matchingEval.disciplineScore || 0}ن، زي ${matchingEval.uniformScore || 0}ن`;
-          } else {
-            reason = reason.replace(/تقييم يوم \S+/, `تقييم يوم ${accurateDay}`);
-          }
+        // Matching evaluation exists with points > 0:
+        const accurateDay = matchingEval.dayName || getArabicDayName(dKey);
+        const att =
+          matchingEval.attendance === 'early'
+            ? 'مبكر (2ن)'
+            : matchingEval.attendance === 'late'
+            ? 'متأخر (1ن)'
+            : 'غائب (0ن)';
+        const cleanReason = `تقييم يوم ${accurateDay} (${dKey}): حضور ${att}، حفظ ${matchingEval.memorizationScore || 0}ن، مراجعة ${matchingEval.revisionScore || 0}ن، انضباط ${matchingEval.disciplineScore || 0}ن، زي ${matchingEval.uniformScore || 0}ن`;
 
-          consolidatedTxs.push({
-            id: latest.id || `tx_eval_${sId}_${dKey}`,
-            studentId: sId,
-            studentName: latest.studentName,
-            amount: totalPoints,
+        const primaryTx = list[0];
+        if (list.length > 1) {
+          txModified = true;
+        }
+
+        const consolidatedTx: PointTransaction = {
+          id: primaryTx.id || `tx_eval_${sId}_${dKey}`,
+          studentId: sId,
+          studentName: matchingEval.studentName || primaryTx.studentName,
+          amount: evalScore,
+          type: 'memorization',
+          reason: cleanReason,
+          date: dKey,
+          createdBy: matchingEval.recordedBy || primaryTx.createdBy || 'المعلم',
+          createdByRole: 'teacher',
+          idempotencyKey: `daily_eval_${sId}_${dKey}`,
+        };
+
+        if (primaryTx.amount !== evalScore || primaryTx.reason !== cleanReason || list.length > 1) {
+          txModified = true;
+        }
+
+        consolidatedTxs.push(consolidatedTx);
+      });
+
+      // Ensure that all existing active evaluations in `evals` (with points > 0) have a corresponding transaction
+      evals.forEach((e) => {
+        if (!e.studentId || !e.date) return;
+        const pts = typeof e.totalPoints === 'number' ? e.totalPoints : e.pointsAwarded || 0;
+        if (pts <= 0) return;
+        const key = `${e.studentId}_${e.date}`;
+        if (!evalMap.has(key)) {
+          const accurateDay = e.dayName || getArabicDayName(e.date);
+          const att =
+            e.attendance === 'early' ? 'مبكر (2ن)' : e.attendance === 'late' ? 'متأخر (1ن)' : 'غائب (0ن)';
+          const cleanReason = `تقييم يوم ${accurateDay} (${e.date}): حضور ${att}، حفظ ${e.memorizationScore || 0}ن، مراجعة ${e.revisionScore || 0}ن، انضباط ${e.disciplineScore || 0}ن، زي ${e.uniformScore || 0}ن`;
+          const newTx: PointTransaction = {
+            id: `tx_eval_${e.studentId}_${e.date}`,
+            studentId: e.studentId,
+            studentName: e.studentName,
+            amount: pts,
             type: 'memorization',
-            reason,
-            date: dKey,
-            createdBy: latest.createdBy,
-            createdByRole: latest.createdByRole,
-            idempotencyKey: `daily_eval_${sId}_${dKey}`,
-          });
+            reason: cleanReason,
+            date: e.date,
+            createdBy: e.recordedBy || 'المعلم',
+            createdByRole: 'teacher',
+            idempotencyKey: `daily_eval_${e.studentId}_${e.date}`,
+          };
+          consolidatedTxs.push(newTx);
+          txModified = true;
         }
       });
 
@@ -544,7 +625,7 @@ class FirestoreConnectedRepository implements IRepository {
         saveItem(STORAGE_KEYS.TRANSACTIONS, consolidatedTxs);
       }
 
-      // 3. Reconcile student balances with transactions ledger
+      // 3. Reconcile student balances with transactions ledger LOCALLY
       const finalTxs = txModified ? consolidatedTxs : rawTransactions;
       const students = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
 
@@ -558,13 +639,11 @@ class FirestoreConnectedRepository implements IRepository {
 
       let modified = false;
       students.forEach((s) => {
-        if (txPointsByStudent.has(s.id)) {
-          const truePoints = Math.max(0, txPointsByStudent.get(s.id)!);
-          if (s.currentPoints !== truePoints) {
-            s.currentPoints = truePoints;
-            modified = true;
-            syncToFirestore('students', s);
-          }
+        const truePoints = Math.max(0, txPointsByStudent.get(s.id) || 0);
+        if (s.currentPoints !== truePoints) {
+          s.currentPoints = truePoints;
+          modified = true;
+          // Local update only - no Firestore writes inside reconciliation
         }
       });
 
@@ -577,9 +656,12 @@ class FirestoreConnectedRepository implements IRepository {
   }
 
   private initFirestoreRealtimeListeners() {
+    if (this.listenersInitialized) return;
+    this.listenersInitialized = true;
+
     try {
       // Global snapshot sync listener to confirm Firestore caught up with remote server
-      onSnapshotsInSync(db, () => {
+      const unsubSync = onSnapshotsInSync(db, () => {
         updateSyncState({
           status: 'connected',
           lastUpdated: new Date(),
@@ -587,6 +669,7 @@ class FirestoreConnectedRepository implements IRepository {
           errorMessage: undefined,
         });
       });
+      this.unsubscribers.push(unsubSync);
 
       const handleSnapshotError = (col: string) => (error: any) => {
         if (error?.code === 'permission-denied') {
@@ -609,27 +692,36 @@ class FirestoreConnectedRepository implements IRepository {
         });
       };
 
-      // 1. Sync Students from Firestore (Cached in IndexedDB to avoid read quotas)
-      onSnapshot(
+      // 1. Sync Students from Firestore
+      const unsubStudents = onSnapshot(
         collection(db, 'students'),
+        { includeMetadataChanges: false },
         (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
           recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Student[] = [];
-            snapshot.forEach((d) => list.push(d.data() as Student));
+            snapshot.forEach((d) => {
+              const s = d.data() as Student;
+              if (s && s.id && !deletedDocIds.has(s.id)) {
+                list.push(s);
+              }
+            });
             saveItem(STORAGE_KEYS.STUDENTS, list);
-            this.reconcileStudentPointsFromTransactions();
             this.recalculateCircleStudentCounts();
             debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('students')
       );
+      this.unsubscribers.push(unsubStudents);
 
       // 2. Sync Circles from Firestore
-      onSnapshot(
+      const unsubCircles = onSnapshot(
         collection(db, 'circles'),
+        { includeMetadataChanges: false },
         (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
           recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Circle[] = [];
@@ -640,11 +732,14 @@ class FirestoreConnectedRepository implements IRepository {
         },
         handleSnapshotError('circles')
       );
+      this.unsubscribers.push(unsubCircles);
 
       // 3. Sync Teachers from Firestore
-      onSnapshot(
+      const unsubTeachers = onSnapshot(
         collection(db, 'teachers'),
+        { includeMetadataChanges: false },
         (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
           recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Teacher[] = [];
@@ -655,57 +750,83 @@ class FirestoreConnectedRepository implements IRepository {
         },
         handleSnapshotError('teachers')
       );
+      this.unsubscribers.push(unsubTeachers);
 
       // 4. Sync Evaluations from Firestore
-      onSnapshot(
+      const unsubEvals = onSnapshot(
         collection(db, 'evaluations'),
+        { includeMetadataChanges: false },
         (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
           recordSnapshotReceived(snapshot.metadata.fromCache);
+          const list: EvaluationRecord[] = [];
           if (!snapshot.empty) {
-            const list: EvaluationRecord[] = [];
-            snapshot.forEach((d) => list.push(d.data() as EvaluationRecord));
-            saveItem(STORAGE_KEYS.EVALUATIONS, list);
-            debouncedNotifySubscribers();
+            snapshot.forEach((d) => {
+              const rec = d.data() as EvaluationRecord;
+              if (rec && rec.id && !deletedDocIds.has(rec.id)) {
+                list.push(rec);
+              }
+            });
           }
+          saveItem(STORAGE_KEYS.EVALUATIONS, list);
+          debouncedNotifySubscribers();
         },
         handleSnapshotError('evaluations')
       );
+      this.unsubscribers.push(unsubEvals);
 
       // 5. Sync Point Transactions from Firestore
-      onSnapshot(
+      const unsubTx = onSnapshot(
         collection(db, 'transactions'),
+        { includeMetadataChanges: false },
         (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
           recordSnapshotReceived(snapshot.metadata.fromCache);
+          const list: PointTransaction[] = [];
           if (!snapshot.empty) {
-            const list: PointTransaction[] = [];
-            snapshot.forEach((d) => list.push(d.data() as PointTransaction));
-            saveItem(STORAGE_KEYS.TRANSACTIONS, list);
-            this.reconcileStudentPointsFromTransactions();
-            debouncedNotifySubscribers();
+            snapshot.forEach((d) => {
+              const tx = d.data() as PointTransaction;
+              if (tx && tx.id && !deletedDocIds.has(tx.id)) {
+                list.push(tx);
+              }
+            });
           }
+          saveItem(STORAGE_KEYS.TRANSACTIONS, list);
+          debouncedNotifySubscribers();
         },
         handleSnapshotError('transactions')
       );
+      this.unsubscribers.push(unsubTx);
 
       // 6. Sync Rewards from Firestore
-      onSnapshot(
+      const unsubRewards = onSnapshot(
         collection(db, 'rewards'),
+        { includeMetadataChanges: false },
         (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
           recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: Reward[] = [];
-            snapshot.forEach((d) => list.push(d.data() as Reward));
+            snapshot.forEach((d) => {
+              const r = d.data() as Reward;
+              if (r && r.id && !deletedDocIds.has(r.id)) {
+                list.push(r);
+              }
+            });
             saveItem(STORAGE_KEYS.REWARDS, list);
             debouncedNotifySubscribers();
           }
         },
         handleSnapshotError('rewards')
       );
+      this.unsubscribers.push(unsubRewards);
 
       // 7. Sync Redemptions from Firestore
-      onSnapshot(
+      const unsubRedemptions = onSnapshot(
         collection(db, 'redemptions'),
+        { includeMetadataChanges: false },
         (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
           recordSnapshotReceived(snapshot.metadata.fromCache);
           if (!snapshot.empty) {
             const list: RedemptionRequest[] = [];
@@ -716,6 +837,43 @@ class FirestoreConnectedRepository implements IRepository {
         },
         handleSnapshotError('redemptions')
       );
+      this.unsubscribers.push(unsubRedemptions);
+
+      // 8. Sync Exam Nominations from Firestore
+      const unsubNominations = onSnapshot(
+        collection(db, 'exam_nominations'),
+        { includeMetadataChanges: false },
+        (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
+          recordSnapshotReceived(snapshot.metadata.fromCache);
+          if (!snapshot.empty) {
+            const list: ExamNomination[] = [];
+            snapshot.forEach((d) => list.push(d.data() as ExamNomination));
+            saveItem(STORAGE_KEYS.EXAM_NOMINATIONS, list);
+            debouncedNotifySubscribers();
+          }
+        },
+        handleSnapshotError('exam_nominations')
+      );
+      this.unsubscribers.push(unsubNominations);
+
+      // 9. Sync Support Tickets from Firestore
+      const unsubTickets = onSnapshot(
+        collection(db, 'support_tickets'),
+        { includeMetadataChanges: false },
+        (snapshot) => {
+          if (snapshot.metadata.hasPendingWrites) return;
+          recordSnapshotReceived(snapshot.metadata.fromCache);
+          if (!snapshot.empty) {
+            const list: SupportTicket[] = [];
+            snapshot.forEach((d) => list.push(d.data() as SupportTicket));
+            saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
+            debouncedNotifySubscribers();
+          }
+        },
+        handleSnapshotError('support_tickets')
+      );
+      this.unsubscribers.push(unsubTickets);
     } catch (e) {
       console.warn('Firestore real-time listeners initialization skipped:', e);
     }
@@ -765,10 +923,20 @@ class FirestoreConnectedRepository implements IRepository {
         if (s.currentPoints !== truePoints) {
           s.currentPoints = truePoints;
           modified = true;
-          setTimeout(() => {
-            syncToFirestore('students', s);
-          }, 50);
         }
+      }
+
+      // Reconcile attendance and streaks against evaluation/attendance records
+      const stats = this.getStudentAttendanceStats(s.id);
+      if (
+        s.attendanceRate !== stats.attendanceRate ||
+        s.streakDays !== stats.streakDays ||
+        s.consecutiveAbsences !== stats.consecutiveAbsences
+      ) {
+        s.attendanceRate = stats.attendanceRate;
+        s.streakDays = stats.streakDays;
+        s.consecutiveAbsences = stats.consecutiveAbsences;
+        modified = true;
       }
     });
 
@@ -822,6 +990,7 @@ class FirestoreConnectedRepository implements IRepository {
     const student = students.find((s) => s.id === id);
     if (!student) return { success: false, message: 'الطالب غير موجود' };
 
+    deletedDocIds.add(id);
     const filtered = students.filter((s) => s.id !== id);
     saveItem(STORAGE_KEYS.STUDENTS, filtered);
     deleteFromFirestore('students', id);
@@ -849,6 +1018,7 @@ class FirestoreConnectedRepository implements IRepository {
     student.active = !student.active;
     saveItem(STORAGE_KEYS.STUDENTS, students);
     syncToFirestore('students', student);
+    this.recalculateCircleStudentCounts();
 
     this.addAuditLog({
       actorId: actor.id,
@@ -1197,12 +1367,31 @@ class FirestoreConnectedRepository implements IRepository {
     return records;
   }
 
-  getStudentAttendanceStats(studentId: string): StudentAttendanceStats {
+  getStudentAttendanceStats(studentId: string, period?: 'week' | 'month' | 'all'): StudentAttendanceStats {
     const evals = loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, INITIAL_EVALUATIONS);
     const attendance = loadItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
 
-    const studentEvals = evals.filter((e) => e.studentId === studentId);
-    const studentAttendance = attendance.filter((r) => r.studentId === studentId);
+    let studentEvals = evals.filter((e) => e.studentId === studentId);
+    let studentAttendance = attendance.filter((r) => r.studentId === studentId);
+
+    // Apply period filtering if specified
+    if (period && period !== 'all') {
+      const now = new Date();
+      let minDate = '';
+      if (period === 'week') {
+        const d = new Date(now);
+        // Start of current week (Sunday)
+        d.setDate(d.getDate() - d.getDay());
+        minDate = d.toISOString().split('T')[0];
+      } else if (period === 'month') {
+        const d = new Date(now.getFullYear(), now.getMonth(), 1);
+        minDate = d.toISOString().split('T')[0];
+      }
+      if (minDate) {
+        studentEvals = studentEvals.filter((e) => e.date >= minDate);
+        studentAttendance = studentAttendance.filter((a) => a.date >= minDate);
+      }
+    }
 
     // Map each distinct date to status
     const dateStatusMap = new Map<string, 'present' | 'absent' | 'excused'>();
@@ -1256,6 +1445,29 @@ class FirestoreConnectedRepository implements IRepository {
     const hasRecords = totalSessions > 0;
     const attendanceRate = hasRecords ? Math.round((presentDays / totalSessions) * 100) : 0;
 
+    // Calculate accurate streaks from chronological entries
+    const sortedEntries = Array.from(dateStatusMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    let currentStreak = 0;
+    let maxStreak = 0;
+    let currentConsecutiveAbsences = 0;
+
+    sortedEntries.forEach(([_, status]) => {
+      if (status === 'present') {
+        currentStreak++;
+        currentConsecutiveAbsences = 0;
+        if (currentStreak > maxStreak) {
+          maxStreak = currentStreak;
+        }
+      } else if (status === 'absent') {
+        currentStreak = 0;
+        currentConsecutiveAbsences++;
+      }
+    });
+
+    const streakDays = hasRecords ? currentStreak : 0;
+    const maxStreakDays = hasRecords ? maxStreak : 0;
+    const consecutiveAbsences = hasRecords ? currentConsecutiveAbsences : 0;
+
     return {
       presentDays,
       absentDays,
@@ -1263,6 +1475,9 @@ class FirestoreConnectedRepository implements IRepository {
       totalSessions,
       attendanceRate,
       hasRecords,
+      streakDays,
+      maxStreakDays,
+      consecutiveAbsences,
     };
   }
 
@@ -1273,8 +1488,14 @@ class FirestoreConnectedRepository implements IRepository {
 
       students.forEach((s) => {
         const stats = this.getStudentAttendanceStats(s.id);
-        if (s.attendanceRate !== stats.attendanceRate) {
+        if (
+          s.attendanceRate !== stats.attendanceRate ||
+          s.streakDays !== stats.streakDays ||
+          s.consecutiveAbsences !== stats.consecutiveAbsences
+        ) {
           s.attendanceRate = stats.attendanceRate;
+          s.streakDays = stats.streakDays;
+          s.consecutiveAbsences = stats.consecutiveAbsences;
           modified = true;
         }
       });
@@ -1402,12 +1623,12 @@ class FirestoreConnectedRepository implements IRepository {
     studentId: string;
     circleId: string;
     date: string;
-    dayName: string;
-    attendance: 'early' | 'late' | 'absent';
-    disciplineScore: number;
-    uniformScore: number;
-    memorizationScore: number;
-    revisionScore: number;
+    dayName?: string;
+    attendance?: 'early' | 'late' | 'absent' | null;
+    disciplineScore?: number | null;
+    uniformScore?: number | null;
+    memorizationScore?: number | null;
+    revisionScore?: number | null;
     familyMeetingScore?: number;
     notes?: string;
     teacherName: string;
@@ -1423,16 +1644,26 @@ class FirestoreConnectedRepository implements IRepository {
     let attPoints = 0;
     if (params.attendance === 'early') attPoints = rules.attendanceEarly ?? 2;
     else if (params.attendance === 'late') attPoints = rules.attendanceLate ?? 1;
-    else attPoints = rules.attendanceAbsent ?? 0;
+    else if (params.attendance === 'absent') attPoints = rules.attendanceAbsent ?? 0;
+    else attPoints = 0;
 
-    const totalPoints =
-      attPoints +
-      params.disciplineScore +
-      params.uniformScore +
-      params.memorizationScore +
-      params.revisionScore;
+    const discPts = typeof params.disciplineScore === 'number' ? params.disciplineScore : 0;
+    const uniPts = typeof params.uniformScore === 'number' ? params.uniformScore : 0;
+    const memPts = typeof params.memorizationScore === 'number' ? params.memorizationScore : 0;
+    const revPts = typeof params.revisionScore === 'number' ? params.revisionScore : 0;
+
+    const totalPoints = attPoints + discPts + uniPts + memPts + revPts;
 
     const accurateDayName = getArabicDayName(params.date);
+
+    if (!isCircleDay(params.date)) {
+      return {
+        success: false,
+        message: 'الرصد متاح فقط لأيام الحلقات المقررة من الأحد إلى الأربعاء',
+        record: {} as EvaluationRecord,
+        deltaPoints: 0,
+      };
+    }
 
     const evals = this.getEvaluationsList();
     const existingIndex = evals.findIndex((e) => e.studentId === params.studentId && e.date === params.date);
@@ -1444,12 +1675,12 @@ class FirestoreConnectedRepository implements IRepository {
       evalRecord = {
         ...old,
         circleId: params.circleId,
-        attendance: params.attendance,
+        attendance: params.attendance || undefined,
         attendancePoints: attPoints,
-        disciplineScore: params.disciplineScore,
-        uniformScore: params.uniformScore,
-        memorizationScore: params.memorizationScore,
-        revisionScore: params.revisionScore,
+        disciplineScore: typeof params.disciplineScore === 'number' ? params.disciplineScore : undefined,
+        uniformScore: typeof params.uniformScore === 'number' ? params.uniformScore : undefined,
+        memorizationScore: typeof params.memorizationScore === 'number' ? params.memorizationScore : undefined,
+        revisionScore: typeof params.revisionScore === 'number' ? params.revisionScore : undefined,
         familyMeetingScore: params.familyMeetingScore ?? old.familyMeetingScore ?? 2,
         totalPoints,
         pointsAwarded: totalPoints,
@@ -1468,12 +1699,12 @@ class FirestoreConnectedRepository implements IRepository {
         circleId: params.circleId,
         date: params.date,
         dayName: accurateDayName,
-        attendance: params.attendance,
+        attendance: params.attendance || undefined,
         attendancePoints: attPoints,
-        disciplineScore: params.disciplineScore,
-        uniformScore: params.uniformScore,
-        memorizationScore: params.memorizationScore,
-        revisionScore: params.revisionScore,
+        disciplineScore: typeof params.disciplineScore === 'number' ? params.disciplineScore : undefined,
+        uniformScore: typeof params.uniformScore === 'number' ? params.uniformScore : undefined,
+        memorizationScore: typeof params.memorizationScore === 'number' ? params.memorizationScore : undefined,
+        revisionScore: typeof params.revisionScore === 'number' ? params.revisionScore : undefined,
         familyMeetingScore: params.familyMeetingScore ?? 2,
         totalPoints,
         pointsAwarded: totalPoints,
@@ -1501,8 +1732,8 @@ class FirestoreConnectedRepository implements IRepository {
     const netPointsDelta = totalPoints - oldRecordedPoints;
 
     const attendanceLabel =
-      params.attendance === 'early' ? 'مبكر (2ن)' : params.attendance === 'late' ? 'متأخر (1ن)' : 'غائب (0ن)';
-    const cleanReason = `تقييم يوم ${accurateDayName} (${params.date}): حضور ${attendanceLabel}، حفظ ${params.memorizationScore}ن، مراجعة ${params.revisionScore}ن، انضباط ${params.disciplineScore}ن، زي ${params.uniformScore}ن`;
+      params.attendance === 'early' ? 'مبكر (2ن)' : params.attendance === 'late' ? 'متأخر (1ن)' : params.attendance === 'absent' ? 'غائب (0ن)' : 'لم يُرصد';
+    const cleanReason = `تقييم يوم ${accurateDayName} (${params.date}): حضور ${attendanceLabel}، حفظ ${params.memorizationScore ?? '-'}ن، مراجعة ${params.revisionScore ?? '-'}ن، انضباط ${params.disciplineScore ?? '-'}ن، زي ${params.uniformScore ?? '-'}ن`;
 
     // Filter out old evaluation transactions to replace them with 1 clean consolidated transaction
     const remainingTxs = transactions.filter((t) => !isThisDailyEvalTx(t));
@@ -1512,7 +1743,7 @@ class FirestoreConnectedRepository implements IRepository {
       deleteFromFirestore('transactions', t.id);
     });
 
-    if (totalPoints >= 0) {
+    if (totalPoints > 0) {
       const consolidatedTx: PointTransaction = {
         id: oldEvalTxs[0]?.id || `tx_eval_${student.id}_${params.date}`,
         studentId: student.id,
@@ -1531,15 +1762,19 @@ class FirestoreConnectedRepository implements IRepository {
 
     saveItem(STORAGE_KEYS.TRANSACTIONS, remainingTxs);
 
-    // Update student balance by netPointsDelta atomically
-    const freshStudents = this.getStudents();
+    // Calculate new current points for student directly from ledger
+    const studentTotalPoints = remainingTxs
+      .filter((t) => t.studentId === student.id && typeof t.amount === 'number')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const freshStudents = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
     const sIdx = freshStudents.findIndex((s) => s.id === params.studentId);
     if (sIdx >= 0) {
-      freshStudents[sIdx].currentPoints = Math.max(0, (freshStudents[sIdx].currentPoints || 0) + netPointsDelta);
-      if (params.attendance !== 'absent') {
+      freshStudents[sIdx].currentPoints = Math.max(0, studentTotalPoints);
+      if (params.attendance !== 'absent' && params.attendance) {
         freshStudents[sIdx].streakDays = (freshStudents[sIdx].streakDays || 0) + 1;
         freshStudents[sIdx].consecutiveAbsences = 0;
-      } else {
+      } else if (params.attendance === 'absent') {
         freshStudents[sIdx].streakDays = 0;
         freshStudents[sIdx].consecutiveAbsences = (freshStudents[sIdx].consecutiveAbsences || 0) + 1;
         if (freshStudents[sIdx].consecutiveAbsences >= 3) {
@@ -1554,6 +1789,7 @@ class FirestoreConnectedRepository implements IRepository {
       syncToFirestore('students', freshStudents[sIdx]);
     }
 
+    this.reconcileStudentPointsFromTransactions();
     notifySubscribers();
     return {
       success: true,
@@ -1569,14 +1805,16 @@ class FirestoreConnectedRepository implements IRepository {
     teacherName?: string;
   }): { success: boolean; message: string; deletedRecord?: EvaluationRecord } {
     const evals = this.getEvaluationsList();
-    const existingIndex = evals.findIndex((e) => e.studentId === params.studentId && e.date === params.date);
-    if (existingIndex === -1) {
-      return { success: false, message: 'لا يوجد تقييم مسجل لهذا اليوم' };
+    const toDelete = evals.filter((e) => e.studentId === params.studentId && e.date === params.date);
+    const remainingEvals = evals.filter((e) => !(e.studentId === params.studentId && e.date === params.date));
+    const old = toDelete[0];
+    if (toDelete.length > 0) {
+      saveItem(STORAGE_KEYS.EVALUATIONS, remainingEvals);
+      toDelete.forEach((oldRec) => {
+        deleteFromFirestore('evaluations', oldRec.id);
+        deletedDocIds.add(oldRec.id);
+      });
     }
-    const old = evals[existingIndex];
-    evals.splice(existingIndex, 1);
-    saveItem(STORAGE_KEYS.EVALUATIONS, evals);
-    deleteFromFirestore('evaluations', old.id);
 
     // Cleanly remove any evaluation transactions for this date and deduct points
     const transactions = this.getTransactions();
@@ -1584,31 +1822,34 @@ class FirestoreConnectedRepository implements IRepository {
       t.studentId === params.studentId &&
       (t.idempotencyKey === `daily_eval_${params.studentId}_${params.date}` ||
        t.idempotencyKey?.startsWith(`student_${params.studentId}:${params.date}:daily_eval`) ||
-       (t.date === params.date && (t.reason.startsWith('تقييم يوم') || t.reason.startsWith('إلغاء وحذف تقييم يوم'))));
+       (t.date === params.date && (t.reason?.startsWith('تقييم يوم') || t.reason?.startsWith('إلغاء وحذف تقييم يوم') || t.idempotencyKey?.includes('daily_eval'))));
 
     const oldEvalTxs = transactions.filter(isThisDailyEvalTx);
-    const oldRecordedPoints = oldEvalTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
     const remainingTxs = transactions.filter((t) => !isThisDailyEvalTx(t));
     oldEvalTxs.forEach((t) => {
       deleteFromFirestore('transactions', t.id);
+      deletedDocIds.add(t.id);
     });
     saveItem(STORAGE_KEYS.TRANSACTIONS, remainingTxs);
 
-    const freshStudents = this.getStudents();
+    // Calculate new current points for student directly from ledger
+    const studentTotalPoints = remainingTxs
+      .filter((t) => t.studentId === params.studentId && typeof t.amount === 'number')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const freshStudents = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
     const sIdx = freshStudents.findIndex((s) => s.id === params.studentId);
     if (sIdx >= 0) {
-      if (oldRecordedPoints > 0) {
-        freshStudents[sIdx].currentPoints = Math.max(0, (freshStudents[sIdx].currentPoints || 0) - oldRecordedPoints);
-      }
+      freshStudents[sIdx].currentPoints = Math.max(0, studentTotalPoints);
       const stats = this.getStudentAttendanceStats(freshStudents[sIdx].id);
       freshStudents[sIdx].attendanceRate = stats.attendanceRate;
       saveItem(STORAGE_KEYS.STUDENTS, freshStudents);
       syncToFirestore('students', freshStudents[sIdx]);
     }
 
+    this.reconcileStudentPointsFromTransactions();
     notifySubscribers();
-    return { success: true, message: 'تم حذف التقييم بنجاح', deletedRecord: old };
+    return { success: true, message: 'تم إلغاء التقييم ومزامنة النقاط بنجاح', deletedRecord: old };
   }
 
   getEvaluationForStudentAndDate(studentId: string, date: string): EvaluationRecord | undefined {
@@ -1664,6 +1905,7 @@ class FirestoreConnectedRepository implements IRepository {
   deleteReward(id: string, actor: { id: string; name: string; role: Role }): void {
     const rewards = this.getRewards();
     const reward = rewards.find((r) => r.id === id);
+    deletedDocIds.add(id);
     const filtered = rewards.filter((r) => r.id !== id);
     saveItem(STORAGE_KEYS.REWARDS, filtered);
     deleteFromFirestore('rewards', id);
@@ -1845,6 +2087,201 @@ class FirestoreConnectedRepository implements IRepository {
     };
   }
 
+  deleteRedemptionRequest(requestId: string, handledBy?: string): { success: boolean; message: string } {
+    const requests = this.getRedemptionRequests();
+    const req = requests.find((r) => r.id === requestId);
+    if (!req) return { success: false, message: 'طلب المطالبة غير موجود' };
+
+    // If pending and not refunded yet, return the points to the student upon deletion
+    if (req.status === 'pending' && !req.refunded) {
+      const students = this.getStudents();
+      const student = students.find((s) => s.id === req.studentId);
+      if (student) {
+        this.addPointTransaction({
+          studentId: student.id,
+          amount: req.rewardCost,
+          type: 'refund',
+          reason: `إلغاء وحذف طلب مكافأة: ${req.rewardTitle} (إعادة ${req.rewardCost} نقطة)`,
+          createdBy: handledBy || 'المشرف',
+          createdByRole: 'supervisor',
+        });
+      }
+    }
+
+    const filtered = requests.filter((r) => r.id !== requestId);
+    saveItem(STORAGE_KEYS.REDEMPTIONS, filtered);
+    deleteFromFirestore('redemptions', requestId);
+    deletedDocIds.add(requestId);
+
+    this.addAuditLog({
+      actorId: handledBy || 'supervisor',
+      actorName: handledBy || 'المشرف',
+      actorRole: 'supervisor',
+      action: 'حذف طلب استرداد',
+      details: `تم حذف طلب ${req.rewardTitle} للطالب ${req.studentName} من سجل وتاريخ المطالبات`,
+      targetType: 'redemption',
+      targetId: req.id,
+    });
+
+    notifySubscribers();
+    return { success: true, message: 'تم حذف المطالبة من السجل بنجاح' };
+  }
+
+  // Exam Nominations (ترشيح للاختبار)
+  getExamNominations(filter?: { circleId?: string; status?: string; studentId?: string }): ExamNomination[] {
+    let list = loadItem<ExamNomination[]>(STORAGE_KEYS.EXAM_NOMINATIONS, []);
+    if (filter?.circleId && filter.circleId !== 'all') {
+      list = list.filter((n) => n.circleId === filter.circleId);
+    }
+    if (filter?.status && filter.status !== 'all') {
+      list = list.filter((n) => n.status === filter.status);
+    }
+    if (filter?.studentId) {
+      list = list.filter((n) => n.studentId === filter.studentId);
+    }
+    return list;
+  }
+
+  createExamNominations(
+    nominations: Array<{
+      studentId: string;
+      studentName: string;
+      circleId: string;
+      circleName: string;
+      teacherId: string;
+      teacherName: string;
+      partsCount: number;
+      partsDescription?: string;
+      notes?: string;
+    }>
+  ): { success: boolean; message: string; count: number } {
+    if (!nominations || nominations.length === 0) {
+      return { success: false, message: 'لم يتم تحديد أي طالب للترشيح', count: 0 };
+    }
+
+    const currentList = this.getExamNominations();
+    const today = new Date().toISOString().split('T')[0];
+    const nowIso = new Date().toISOString();
+
+    const createdList: ExamNomination[] = [];
+
+    nominations.forEach((item) => {
+      const newNomination: ExamNomination = {
+        id: `exam_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        studentId: item.studentId,
+        studentName: item.studentName,
+        circleId: item.circleId,
+        circleName: item.circleName,
+        teacherId: item.teacherId,
+        teacherName: item.teacherName,
+        partsCount: Math.max(1, item.partsCount),
+        partsDescription: item.partsDescription?.trim() || undefined,
+        notes: item.notes?.trim() || undefined,
+        status: 'pending',
+        requestDate: today,
+        createdAt: nowIso,
+      };
+
+      createdList.push(newNomination);
+      currentList.unshift(newNomination);
+      syncToFirestore('exam_nominations', newNomination);
+
+      this.addAuditLog({
+        actorId: item.teacherId || 'teacher',
+        actorName: item.teacherName || 'معلم الحلقة',
+        actorRole: 'teacher',
+        action: 'ترشيح للاختبار',
+        details: `ترشيح الطالب ${item.studentName} لاختبار (${item.partsDescription || `${item.partsCount} أجزاء`}) من قِبل ${item.teacherName}`,
+        targetType: 'student',
+        targetId: item.studentId,
+      });
+    });
+
+    saveItem(STORAGE_KEYS.EXAM_NOMINATIONS, currentList);
+    notifySubscribers();
+
+    return {
+      success: true,
+      message: `تم إرسال ترشيح ${nominations.length} ${nominations.length === 1 ? 'طالب' : 'طلاب'} للاختبار بنجاح إلى المشرف العام.`,
+      count: nominations.length,
+    };
+  }
+
+  updateExamNominationStatus(params: {
+    nominationId: string;
+    status: ExamNominationStatus;
+    handledBy: string;
+    cancellationReason?: string;
+  }): { success: boolean; message: string } {
+    const list = this.getExamNominations();
+    const idx = list.findIndex((n) => n.id === params.nominationId);
+    if (idx === -1) {
+      return { success: false, message: 'طلب الترشيح غير موجود' };
+    }
+
+    const item = list[idx];
+    item.status = params.status;
+    item.handledBy = params.handledBy;
+    item.updatedAt = new Date().toISOString();
+
+    if (params.status === 'completed') {
+      item.completedAt = new Date().toISOString();
+    } else if (params.status === 'cancelled') {
+      item.cancellationReason = params.cancellationReason?.trim() || 'تم الإلغاء من المشرف';
+    }
+
+    list[idx] = item;
+    saveItem(STORAGE_KEYS.EXAM_NOMINATIONS, list);
+    syncToFirestore('exam_nominations', item);
+
+    this.addAuditLog({
+      actorId: params.handledBy,
+      actorName: params.handledBy,
+      actorRole: 'supervisor',
+      action: params.status === 'completed' ? 'اعتماد إتمام الاختبار' : 'إلغاء ترشيح الاختبار',
+      details: `طلب اختبار الطالب ${item.studentName} (${item.partsDescription || `${item.partsCount} أجزاء`}) - الحالة: ${params.status === 'completed' ? 'تم الاختبار' : 'ملغي'}`,
+      targetType: 'student',
+      targetId: item.studentId,
+    });
+
+    notifySubscribers();
+
+    const statusText = params.status === 'completed' ? 'تم الاختبار بنجاح' : 'تم إلغاء الطلب';
+    return {
+      success: true,
+      message: `تم تحديث حالة ترشيح الطالب ${item.studentName} إلى (${statusText}) ✓`,
+    };
+  }
+
+  deleteExamNomination(nominationId: string, handledBy?: string): { success: boolean; message: string } {
+    const list = this.getExamNominations();
+    const item = list.find((n) => n.id === nominationId);
+    if (!item) {
+      return { success: false, message: 'طلب الترشيح غير موجود' };
+    }
+
+    const filtered = list.filter((n) => n.id !== nominationId);
+    saveItem(STORAGE_KEYS.EXAM_NOMINATIONS, filtered);
+    deleteFromFirestore('exam_nominations', nominationId);
+    deletedDocIds.add(nominationId);
+
+    this.addAuditLog({
+      actorId: handledBy || 'supervisor',
+      actorName: handledBy || 'المشرف',
+      actorRole: 'supervisor',
+      action: 'حذف ترشيح اختبار',
+      details: `تم حذف ترشيح اختبار الطالب ${item.studentName} (${item.partsDescription || `${item.partsCount} أجزاء`}) من السجل`,
+      targetType: 'student',
+      targetId: item.studentId,
+    });
+
+    notifySubscribers();
+    return {
+      success: true,
+      message: `تم حذف طلب اختبار الطالب ${item.studentName} من السجل بنجاح ✓`,
+    };
+  }
+
   // Rules
   getPointRules(): PointRules {
     return loadItem<PointRules>(STORAGE_KEYS.RULES, INITIAL_POINT_RULES);
@@ -1884,6 +2321,27 @@ class FirestoreConnectedRepository implements IRepository {
     syncToFirestore('audit_logs', newLog);
   }
 
+  deleteAuditLog(logId: string): { success: boolean; message: string } {
+    const logs = this.getAuditLogs();
+    const filtered = logs.filter((l) => l.id !== logId);
+    saveItem(STORAGE_KEYS.AUDIT_LOGS, filtered);
+    deleteFromFirestore('audit_logs', logId);
+    deletedDocIds.add(logId);
+    notifySubscribers();
+    return { success: true, message: 'تم حذف السجل بنجاح' };
+  }
+
+  clearAllAuditLogs(): { success: boolean; message: string } {
+    const logs = this.getAuditLogs();
+    logs.forEach((l) => {
+      deleteFromFirestore('audit_logs', l.id);
+      deletedDocIds.add(l.id);
+    });
+    saveItem(STORAGE_KEYS.AUDIT_LOGS, []);
+    notifySubscribers();
+    return { success: true, message: 'تم مسح كامل سجل العمليات بنجاح' };
+  }
+
   getAchievements(studentId?: string): Achievement[] {
     const base = loadItem<Achievement[]>(STORAGE_KEYS.ACHIEVEMENTS, INITIAL_ACHIEVEMENTS);
     if (!studentId) return base;
@@ -1891,22 +2349,136 @@ class FirestoreConnectedRepository implements IRepository {
     const student = this.getStudentById(studentId);
     if (!student) return base;
 
+    const stats = this.getStudentAttendanceStats(student.id);
+    // Student can only qualify for streak badges if they have recorded attendance sessions and reached the required streak
+    const effectiveStreak = stats.hasRecords ? Math.max(student.streakDays || 0, stats.maxStreakDays || 0) : 0;
+
     return base.map((ach) => {
       let isUnlocked = false;
-      if (ach.requiredPoints && student.currentPoints >= ach.requiredPoints) {
-        isUnlocked = true;
+      let currentValue: number | undefined = undefined;
+
+      if (ach.requiredPoints) {
+        currentValue = student.currentPoints;
+        if (student.currentPoints >= ach.requiredPoints) {
+          isUnlocked = true;
+        }
+      } else if (ach.requiredStreak) {
+        currentValue = effectiveStreak;
+        if (effectiveStreak >= ach.requiredStreak) {
+          isUnlocked = true;
+        }
       }
-      if (ach.requiredStreak && student.streakDays >= ach.requiredStreak) {
-        isUnlocked = true;
+
+      if (ach.code === 'first_100') {
+        currentValue = student.currentPoints;
+        if (student.currentPoints >= 100) {
+          isUnlocked = true;
+        }
       }
-      if (ach.code === 'first_100' && student.currentPoints >= 100) {
-        isUnlocked = true;
-      }
+
       return {
         ...ach,
-        unlockedAt: isUnlocked ? (ach.unlockedAt || '2026-10-10') : undefined,
+        currentValue,
+        unlockedAt: isUnlocked ? (ach.unlockedAt || new Date().toISOString().split('T')[0]) : undefined,
       };
     });
+  }
+
+  // Support Tickets (الدعم الفني)
+  getSupportTickets(): SupportTicket[] {
+    const list = loadItem<SupportTicket[]>(STORAGE_KEYS.SUPPORT_TICKETS, []);
+    let modified = false;
+    list.forEach((t) => {
+      if (!t.priority) {
+        if (t.senderRole === 'supervisor' || t.senderRole === 'teacher' || t.senderRole === 'admin') {
+          t.priority = 'high';
+        } else if (t.senderRole === 'student') {
+          t.priority = t.ticketType === 'مشكلة' ? 'medium' : 'low';
+        } else {
+          t.priority = 'medium';
+        }
+        modified = true;
+      }
+    });
+    if (modified) {
+      saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
+    }
+    return list;
+  }
+
+  createSupportTicket(params: Omit<SupportTicket, 'id' | 'createdAt' | 'status' | 'priority'> & { priority?: SupportTicketPriority }): {
+    success: boolean;
+    message: string;
+    ticket: SupportTicket;
+  } {
+    const list = this.getSupportTickets();
+
+    // Auto-calculate priority based on system rules:
+    // مدير المجمع أو المعلمين -> أولوية عالية (high)
+    // الطلاب -> أولوية متوسطة (medium) إذا مشكلة، أو منخفضة (low) للاقتراحات والاستفسارات
+    let calculatedPriority: SupportTicketPriority = params.priority || 'medium';
+    if (!params.priority) {
+      if (params.senderRole === 'supervisor' || params.senderRole === 'teacher' || params.senderRole === 'admin') {
+        calculatedPriority = 'high';
+      } else if (params.senderRole === 'student') {
+        calculatedPriority = params.ticketType === 'مشكلة' ? 'medium' : 'low';
+      } else {
+        calculatedPriority = 'medium';
+      }
+    }
+
+    const newTicket: SupportTicket = {
+      ...params,
+      priority: calculatedPriority,
+      id: `ticket_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      createdAt: new Date().toISOString(),
+      status: 'new',
+    };
+    list.unshift(newTicket);
+    saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
+    syncToFirestore('support_tickets', newTicket);
+
+    this.addAuditLog({
+      actorId: params.senderId || 'guest',
+      actorName: params.senderName,
+      actorRole: (params.senderRole as Role) || 'student',
+      action: 'إرسال تذكرة دعم فني',
+      details: `تذكرة [أولوية ${calculatedPriority === 'high' ? 'عالية' : calculatedPriority === 'medium' ? 'متوسطة' : 'منخفضة'}] [${params.ticketType}]: ${params.message.slice(0, 50)}...`,
+      targetType: 'settings',
+      targetId: newTicket.id,
+    });
+
+    notifySubscribers();
+    return {
+      success: true,
+      message: 'تم إرسال تذكرة الدعم الفني بنجاح',
+      ticket: newTicket,
+    };
+  }
+
+  updateSupportTicket(
+    ticketId: string,
+    updates: Partial<Pick<SupportTicket, 'priority' | 'status'>>
+  ): { success: boolean; message: string } {
+    const list = this.getSupportTickets();
+    const idx = list.findIndex((t) => t.id === ticketId);
+    if (idx === -1) return { success: false, message: 'التذكرة غير موجودة' };
+
+    list[idx] = { ...list[idx], ...updates };
+    saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
+    syncToFirestore('support_tickets', list[idx]);
+    notifySubscribers();
+    return { success: true, message: 'تم تحديث التذكرة بنجاح' };
+  }
+
+  deleteSupportTicket(ticketId: string): { success: boolean; message: string } {
+    const list = this.getSupportTickets();
+    const filtered = list.filter((t) => t.id !== ticketId);
+    saveItem(STORAGE_KEYS.SUPPORT_TICKETS, filtered);
+    deleteFromFirestore('support_tickets', ticketId);
+    deletedDocIds.add(ticketId);
+    notifySubscribers();
+    return { success: true, message: 'تم حذف التذكرة بنجاح' };
   }
 
   resetToDefaults(): void {
@@ -1921,6 +2493,7 @@ class FirestoreConnectedRepository implements IRepository {
     localStorage.removeItem(STORAGE_KEYS.RULES);
     localStorage.removeItem(STORAGE_KEYS.AUDIT_LOGS);
     localStorage.removeItem(STORAGE_KEYS.ACHIEVEMENTS);
+    localStorage.removeItem(STORAGE_KEYS.SUPPORT_TICKETS);
     notifySubscribers();
   }
 }

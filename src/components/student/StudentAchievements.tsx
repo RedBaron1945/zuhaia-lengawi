@@ -77,9 +77,28 @@ export const StudentAchievements: React.FC<StudentAchievementsProps> = ({ studen
                 {item.requiredPoints && (
                   <div className="mt-2 text-[11px] text-slate-500 font-medium">
                     الهدف: {item.requiredPoints} نقطة
-                    {!isUnlocked && (
+                    {!isUnlocked ? (
                       <span className="text-amber-700 font-bold mr-1">
-                        (متبقي {Math.max(0, item.requiredPoints - student.currentPoints)})
+                        (المحقق: {item.currentValue ?? student.currentPoints} - متبقي {Math.max(0, item.requiredPoints - student.currentPoints)})
+                      </span>
+                    ) : (
+                      <span className="text-emerald-700 font-bold mr-1">
+                        (تم جمع {item.currentValue ?? student.currentPoints} نقطة)
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {item.requiredStreak && (
+                  <div className="mt-2 text-[11px] text-slate-500 font-medium">
+                    الهدف: مواظبة {item.requiredStreak} أيام متتالية
+                    {!isUnlocked ? (
+                      <span className="text-amber-700 font-bold mr-1">
+                        (المحقق حالياً: {item.currentValue ?? 0} أيام - متبقي {Math.max(0, item.requiredStreak - (item.currentValue ?? 0))})
+                      </span>
+                    ) : (
+                      <span className="text-emerald-700 font-bold mr-1">
+                        (تم تحقيق {item.currentValue ?? item.requiredStreak} يوماً متواصلاً)
                       </span>
                     )}
                   </div>

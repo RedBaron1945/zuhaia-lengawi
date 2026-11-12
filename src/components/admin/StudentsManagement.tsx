@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Student, Circle, User } from '../../types';
-import { repository } from '../../services/storageService';
+import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import { PointsAdjustmentModal } from './PointsAdjustmentModal';
 import { ConfirmationModal } from '../common/ConfirmationModal';
@@ -37,6 +37,15 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
   const [circles, setCircles] = useState<Circle[]>(() => repository.getCircles());
   const [search, setSearch] = useState('');
   const [circleFilter, setCircleFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+
+  useEffect(() => {
+    const unsub = subscribeToDataChanges(() => {
+      setStudents(repository.getStudents());
+      setCircles(repository.getCircles());
+    });
+    return unsub;
+  }, []);
 
   // Modals state
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -224,6 +233,8 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
   };
 
   const filteredStudents = students.filter((s) => {
+    if (statusFilter === 'active' && !s.active) return false;
+    if (statusFilter === 'inactive' && s.active) return false;
     if (circleFilter !== 'all' && s.circleId !== circleFilter) return false;
     if (search && !s.name.includes(search) && !s.fullNameQuad?.includes(search)) return false;
     return true;
@@ -233,8 +244,8 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
     <div className="space-y-3">
       {/* Top action row */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-1">
-          <div className="relative flex-1">
+        <div className="flex items-center gap-2 flex-1 flex-wrap sm:flex-nowrap">
+          <div className="relative flex-1 min-w-[180px]">
             <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -247,7 +258,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
           <select
             value={circleFilter}
             onChange={(e) => setCircleFilter(e.target.value)}
-            className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px]"
+            className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
           >
             <option value="all">كل الحلقات</option>
             {circles.map((c) => (
@@ -255,6 +266,15 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                 {c.name}
               </option>
             ))}
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+            className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
+          >
+            <option value="all">كل الحالات</option>
+            <option value="active">النشطين فقط</option>
+            <option value="inactive">المعطلين فقط</option>
           </select>
         </div>
 
@@ -320,7 +340,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
 
                 <div className="text-left shrink-0">
                   <span className="text-xs font-black text-teal-800 bg-teal-50 px-2.5 py-1 rounded-xl border border-teal-200 inline-flex items-center gap-1 tabular-nums">
-                    ⭐ {student.currentPoints} نقطة
+                    {student.currentPoints} نقطة
                   </span>
                 </div>
               </div>
@@ -346,33 +366,36 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                   </button>
                 </div>
 
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     onClick={() => handleOpenEdit(student)}
-                    className="p-2 text-indigo-700 hover:text-indigo-900 hover:bg-indigo-50 rounded-lg min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer transition-colors"
+                    className="p-1.5 sm:px-2.5 sm:py-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50/70 hover:bg-indigo-100 rounded-lg min-h-[34px] flex items-center gap-1 cursor-pointer transition-colors border border-indigo-100 text-xs font-bold"
                     title="تعديل بيانات الطالب للدعم الفني"
                   >
-                    <Edit2 className="w-4 h-4" />
+                    <Edit2 className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">تعديل</span>
                   </button>
 
                   <button
                     onClick={() => handleToggleActive(student)}
-                    className={`p-2 rounded-lg min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer ${
+                    className={`px-2.5 py-1.5 rounded-lg min-h-[34px] flex items-center gap-1 cursor-pointer transition-all border text-xs font-bold ${
                       student.active
-                        ? 'text-amber-600 hover:bg-amber-50'
-                        : 'text-emerald-600 hover:bg-emerald-50'
+                        ? 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200'
+                        : 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
                     }`}
                     title={student.active ? 'تعطيل الحساب' : 'تفعيل الحساب'}
                   >
-                    <Power className="w-4 h-4" />
+                    <Power className="w-3.5 h-3.5" />
+                    <span>{student.active ? 'تعطيل' : 'تفعيل'}</span>
                   </button>
 
                   <button
                     onClick={() => setDeleteCandidate(student)}
-                    className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
-                    title="حذف الطالب"
+                    className="px-2.5 py-1.5 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg min-h-[34px] flex items-center gap-1 cursor-pointer transition-colors text-xs font-bold"
+                    title="حذف الطالب نهائياً"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>حذف</span>
                   </button>
                 </div>
               </div>

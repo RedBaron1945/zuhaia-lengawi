@@ -44,22 +44,29 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
     <div className="space-y-3 text-right">
       {/* (5) Large Week Navigation Bar inside "سجل الأسبوع" tab */}
       {currentWeekStart && onWeekChange && (
-        <div className="bg-white rounded-3xl border border-slate-200/90 p-3.5 shadow-sm flex items-center justify-between gap-3">
+        <div className="bg-white rounded-3xl border border-slate-200/90 p-3 sm:p-3.5 shadow-sm flex items-center justify-between gap-2 sm:gap-3">
           <button
             type="button"
             onClick={handlePrevWeek}
-            className="w-[52px] h-[52px] min-w-[52px] min-h-[52px] rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 shadow-2xs"
+            className="w-10 h-10 sm:w-12 sm:h-12 min-w-[40px] sm:min-w-[48px] rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 shadow-2xs"
             title="الأسبوع السابق"
             aria-label="الأسبوع السابق"
           >
-            <ChevronRight className="w-6 h-6 stroke-[2.5]" />
+            <ChevronRight className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
           </button>
 
-          <div className="text-center flex-1 min-w-0 px-1">
-            <h3 className="text-[18px] font-black text-slate-900 leading-snug truncate">
-              {weekRangeText}
+          <div className="text-center flex-1 min-w-0 px-1 sm:px-2">
+            <h3 className="text-xs sm:text-sm md:text-base font-black text-slate-900 leading-normal sm:leading-snug">
+              {startDay && endDay ? (
+                <>
+                  <span className="inline-block">الأسبوع من {startDay.dayName} {startDay.hijriFormatted}</span>{' '}
+                  <span className="inline-block">إلى {endDay.dayName} {endDay.hijriFormatted}</span>
+                </>
+              ) : (
+                weekRangeText
+              )}
             </h3>
-            <p className="text-[14px] font-bold text-slate-500 mt-0.5">
+            <p className="text-[11px] sm:text-xs font-bold text-slate-500 mt-0.5">
               40 نقطة كحد أقصى للأسبوع
             </p>
           </div>
@@ -67,11 +74,11 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
           <button
             type="button"
             onClick={handleNextWeek}
-            className="w-[52px] h-[52px] min-w-[52px] min-h-[52px] rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 shadow-2xs"
+            className="w-10 h-10 sm:w-12 sm:h-12 min-w-[40px] sm:min-w-[48px] rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 shadow-2xs"
             title="الأسبوع التالي"
             aria-label="الأسبوع التالي"
           >
-            <ChevronLeft className="w-6 h-6 stroke-[2.5]" />
+            <ChevronLeft className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
           </button>
         </div>
       )}
@@ -133,15 +140,15 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
               return (
                 <div key={student.id} className="p-4 hover:bg-slate-50/70 transition-colors space-y-3">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-10 h-10 rounded-2xl bg-teal-100 text-teal-950 font-extrabold text-[16px] flex items-center justify-center shrink-0 border border-teal-200">
+                    <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+                      <div className="w-10 h-10 rounded-2xl bg-teal-100 text-teal-950 font-extrabold text-[16px] flex items-center justify-center shrink-0 border border-teal-200 mt-0.5 sm:mt-0">
                         {student.name.charAt(0)}
                       </div>
-                      <div className="min-w-0">
-                        <h4 className="text-[18px] font-black text-slate-900 truncate">
+                      <div className="min-w-0 flex-1">
+                        <h4 className="text-[17px] sm:text-[18px] font-black text-slate-900 break-words leading-tight sm:leading-snug">
                           {student.name}
                         </h4>
-                        <span className="text-[13px] text-slate-500 font-bold block">
+                        <span className="text-[13px] text-slate-500 font-bold block mt-0.5">
                           تم رصد {recordedDaysCount} من 4 أيام
                         </span>
                       </div>
@@ -149,10 +156,10 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
 
                     <div className="text-left shrink-0 flex flex-col items-end gap-1">
                       <span className="text-[14px] font-black text-teal-900 bg-teal-50 px-2.5 py-1 rounded-xl border border-teal-200 tabular-nums shadow-2xs inline-block">
-                        ⭐ {weeklyTotalPoints} / 40 (أسبوعي)
+                        {weeklyTotalPoints} / 40 (أسبوعي)
                       </span>
                       <span className="text-[11px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200/80 tabular-nums">
-                        الرصيد التراكمي: ⭐ {student.currentPoints} ن
+                        الرصيد التراكمي: {student.currentPoints} ن
                       </span>
                     </div>
                   </div>

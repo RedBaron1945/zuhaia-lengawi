@@ -206,7 +206,7 @@ export const StudentDailyEvaluationCard: React.FC<StudentDailyEvaluationCardProp
               className="text-[10px] font-bold text-teal-800 bg-teal-50 px-1.5 py-0.5 rounded-md border border-teal-200/70 tabular-nums shrink-0"
               title="الرصيد التراكمي الإجمالي للطالب لجميع الأيام"
             >
-              ⭐ {student.currentPoints} ن
+              {student.currentPoints} ن
             </span>
 
             {/* Distinct dot if modified (exception) */}
@@ -282,7 +282,7 @@ export const StudentDailyEvaluationCard: React.FC<StudentDailyEvaluationCardProp
               <span className="text-teal-800 font-extrabold">· تقييم اليوم: {currentTotal} من 10</span>
             </div>
             <div className="text-teal-900 bg-teal-50 px-2 py-0.5 rounded-lg border border-teal-200/80 shrink-0 self-start sm:self-auto font-black tabular-nums">
-              الرصيد التراكمي الكلي: ⭐ {student.currentPoints} نقطة
+              الرصيد التراكمي الكلي: {student.currentPoints} نقطة
             </div>
           </div>
 

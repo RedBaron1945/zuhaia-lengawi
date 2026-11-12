@@ -166,7 +166,6 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                   </button>
                 </div>
                 <div className="inline-flex items-center justify-center gap-2">
-                  <span className="text-xl text-amber-300">⭐</span>
                   <span className="text-5xl sm:text-6xl font-black tracking-tight text-white tabular-nums drop-shadow-md">
                     {student.currentPoints}
                   </span>
@@ -312,7 +311,7 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
 
             <div className="flex items-center gap-2 mb-3">
               <span className="w-8 h-8 rounded-xl bg-teal-50 text-teal-800 flex items-center justify-center font-bold text-sm">
-                ⭐
+                📖
               </span>
               <h3 className="text-sm font-black text-slate-900">
                 كيف تُحسب نقاطك اليومية؟
