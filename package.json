@@ -1,8 +1,8 @@
 {
-  "name": "tarteel-platform",
+  "name": "zuhaia-halaqat-platform",
   "private": true,
   "version": "1.0.0",
-  "description": "منصة ترتيل: نظام لإدارة وتحفيز طلاب حلقات القرآن الكريم بالنقاط والمكافآت والتحضير السريع",
+  "description": "منصة حلقات زهية لنجاوي: نظام لإدارة وتحفيز طلاب حلقات القرآن الكريم بالنقاط والمكافآت والتحضير السريع",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
