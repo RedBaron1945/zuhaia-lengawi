@@ -3,7 +3,7 @@ import { Reward, User } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import { ConfirmationModal } from '../common/ConfirmationModal';
-import { Gift, Plus, Edit2, Trash2, Power, X, Sparkles } from 'lucide-react';
+import { Plus, Edit2, Trash2, Power, X } from 'lucide-react';
 
 interface RewardsManagementProps {
   adminUser: User;

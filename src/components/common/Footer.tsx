@@ -1,5 +1,5 @@
 import React from 'react';
-import { HelpCircle, Sparkles, MessageCircle } from 'lucide-react';
+import { HelpCircle } from 'lucide-react';
 
 interface FooterProps {
   onOpenSupport: () => void;

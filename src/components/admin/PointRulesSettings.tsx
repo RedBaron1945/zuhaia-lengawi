@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { PointRules, User } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
-import { Settings, Check, RotateCcw } from 'lucide-react';
+import { ConfirmationModal } from '../common/ConfirmationModal';
+import { Settings, Check } from 'lucide-react';
 
 interface PointRulesSettingsProps {
   adminUser: User;
@@ -11,12 +12,18 @@ interface PointRulesSettingsProps {
 
 export const PointRulesSettings: React.FC<PointRulesSettingsProps> = ({ adminUser, onUpdate }) => {
   const [rules, setRules] = useState<PointRules>(() => repository.getPointRules());
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const { showToast } = useToast();
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSaveRequest = (e: React.FormEvent) => {
     e.preventDefault();
+    setConfirmOpen(true);
+  };
+
+  const handleConfirmSave = () => {
     repository.updatePointRules(rules, adminUser);
-    showToast('تم حفظ قواعد النقاط الجديدة وتحديث النظام فوراً ✓', 'success');
+    setConfirmOpen(false);
+    showToast('تم حفظ قواعد النقاط الجديدة وتسجيل التعديل في سجل التدقيق ✓', 'success');
     onUpdate();
   };
 
@@ -41,7 +48,7 @@ export const PointRulesSettings: React.FC<PointRulesSettingsProps> = ({ adminUse
         </div>
       </div>
 
-      <form onSubmit={handleSave} className="space-y-4">
+      <form onSubmit={handleSaveRequest} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {/* 1. Attendance */}
           <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
@@ -142,13 +149,24 @@ export const PointRulesSettings: React.FC<PointRulesSettingsProps> = ({ adminUse
         <div className="pt-2">
           <button
             type="submit"
-            className="w-full sm:w-auto min-h-[44px] px-6 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2"
+            className="w-full sm:w-auto min-h-[44px] px-6 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             <Check className="w-4 h-4" />
             <span>حفظ واعتماد قواعد النقاط</span>
           </button>
         </div>
       </form>
+
+      <ConfirmationModal
+        isOpen={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={handleConfirmSave}
+        title="تأكيد تعديل قواعد النقاط"
+        message={`هل تريد اعتماد القواعد التالية لجميع الحلقات؟\n• الحضور المبكر: ${rules.attendanceEarly ?? 2} نقاط\n• الحفظ: ${rules.memorizationMax ?? 2} نقاط\n• المراجعة: ${rules.revisionMax ?? 2} نقاط\n• الانضباط: ${rules.disciplineMax ?? 2} نقاط\n• الزي: ${rules.uniformMax ?? 2} نقاط\n\nسيتم تسجيل هذا التعديل في سجل التدقيق باسم (${adminUser.name}).`}
+        confirmText="تأكيد وحفظ القواعد"
+        cancelText="إلغاء"
+        type="primary"
+      />
     </div>
   );
 };

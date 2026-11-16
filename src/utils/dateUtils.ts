@@ -159,7 +159,7 @@ export function formatHijriDateTime(dateInput: Date | string): string {
   try {
     const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
     const hijri = getHijriParts(d);
-    const timeStr = d.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' });
+    const timeStr = d.toLocaleTimeString('ar-SA-u-nu-latn', { hour: '2-digit', minute: '2-digit' });
     return `${hijri.formatted} ${hijri.year} هـ · ${timeStr}`;
   } catch {
     return String(dateInput);
@@ -205,11 +205,11 @@ export function getCircleDaysOfWeek(weekStartDate: Date): WeekDayInfo[] {
   const sunday = getSundayOfWeek(weekStartDate);
   const todayStr = formatISODate(new Date());
 
-  const daysMapping: { name: ArabicDayName; offset: number }[] = [
-    { name: 'الأحد', offset: 0 },
-    { name: 'الإثنين', offset: 1 },
-    { name: 'الثلاثاء', offset: 2 },
-    { name: 'الأربعاء', offset: 3 },
+  const daysMapping: { name: ArabicDayName; short: string; offset: number }[] = [
+    { name: 'الأحد', short: 'أحد', offset: 0 },
+    { name: 'الإثنين', short: 'إثنين', offset: 1 },
+    { name: 'الثلاثاء', short: 'ثلاثاء', offset: 2 },
+    { name: 'الأربعاء', short: 'أربعاء', offset: 3 },
   ];
 
   return daysMapping.map((item) => {
@@ -221,7 +221,7 @@ export function getCircleDaysOfWeek(weekStartDate: Date): WeekDayInfo[] {
     return {
       date: iso,
       dayName: item.name,
-      dayShort: item.name,
+      dayShort: item.short,
       dayNumber: hijri.day, // Purely Hijri day number
       isToday: iso === todayStr,
       hijriDayNumber: hijri.day,
@@ -255,9 +255,9 @@ export function getWeekRangeText(weekDays: WeekDayInfo[]): string {
   const hLast = getHijriParts(last);
 
   if (hFirst.month === hLast.month) {
-    return `${hFirst.day} - ${hLast.day} ${hFirst.month} ${hLast.year} هـ`;
+    return `${hFirst.day} – ${hLast.day} ${hFirst.month} ${hLast.year} هـ`;
   }
-  return `${hFirst.day} ${hFirst.month} - ${hLast.day} ${hLast.month} ${hLast.year} هـ`;
+  return `${hFirst.day} ${hFirst.month} – ${hLast.day} ${hLast.month} ${hLast.year} هـ`;
 }
 
 // Check if a day is today
@@ -324,3 +324,50 @@ export function calculateAge(birthDate?: string | null): number | null {
     return null;
   }
 }
+
+export function isOlderThanHours(dateInput: Date | string, hours: number): boolean {
+  try {
+    const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
+    const ms = d.getTime();
+    if (Number.isNaN(ms)) return false;
+    return Date.now() - ms > hours * 60 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
+export function formatRelativeTimeArabic(dateInput: Date | string): string {
+  try {
+    const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
+    const ms = d.getTime();
+    if (Number.isNaN(ms)) return '';
+    const diffSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+
+    if (diffSec < 60) return 'الآن';
+
+    const mins = Math.floor(diffSec / 60);
+    if (mins < 60) {
+      if (mins === 1) return 'قبل دقيقة';
+      if (mins === 2) return 'قبل دقيقتين';
+      if (mins <= 10) return `قبل ${mins} دقائق`;
+      return `قبل ${mins} دقيقة`;
+    }
+
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) {
+      if (hrs === 1) return 'قبل ساعة';
+      if (hrs === 2) return 'قبل ساعتين';
+      if (hrs <= 10) return `قبل ${hrs} ساعات`;
+      return `قبل ${hrs} ساعة`;
+    }
+
+    const days = Math.floor(hrs / 24);
+    if (days === 1) return 'قبل يوم';
+    if (days === 2) return 'قبل يومين';
+    if (days <= 10) return `قبل ${days} أيام`;
+    return `قبل ${days} يوماً`;
+  } catch {
+    return '';
+  }
+}
+

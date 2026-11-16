@@ -7,7 +7,7 @@ import { RedemptionManager } from './RedemptionManager';
 import { ExamRequestsManager } from './ExamRequestsManager';
 import { BottomNav } from '../common/BottomNav';
 import { useToast } from '../../context/ToastContext';
-import { BarChart3, Gift, AlertTriangle, ShieldCheck, RefreshCw, Sparkles, BookOpen } from 'lucide-react';
+import { BarChart3, Gift, ShieldCheck, RefreshCw, Sparkles, BookOpen } from 'lucide-react';
 
 interface SupervisorViewProps {
   currentUser: User;

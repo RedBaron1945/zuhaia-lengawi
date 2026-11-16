@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Student } from '../../types';
+import { User } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { RewardsCatalog } from './RewardsCatalog';
 import { StudentHistory } from './StudentHistory';
@@ -14,7 +14,6 @@ import {
   X,
   CheckCircle2,
 } from 'lucide-react';
-import { getHijriParts } from '../../utils/dateUtils';
 import { groupTransactionsByDay, DailyPointsGroup } from '../../utils/pointUtils';
 
 interface StudentViewProps {
@@ -43,24 +42,6 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
   const allEvaluations = student ? repository.getEvaluationsHistory(student.id) : [];
   const dailyGroups = groupTransactionsByDay(allTransactions, allEvaluations);
   const recentDays = dailyGroups.slice(0, 5);
-
-  // Helper for relative date display (اليوم / أمس / تاريخ)
-  const formatRelativeDate = (dateString?: string) => {
-    if (!dateString) return 'اليوم';
-    try {
-      const date = new Date(dateString);
-      const now = new Date();
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      const startOfTarget = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-      const diffDays = Math.round((startOfToday - startOfTarget) / (1000 * 60 * 60 * 24));
-      if (diffDays === 0) return 'اليوم';
-      if (diffDays === 1) return 'أمس';
-      if (diffDays === 2) return 'منذ يومين';
-      return getHijriParts(date).formatted;
-    } catch {
-      return 'مؤخراً';
-    }
-  };
 
   if (!student) {
     return (

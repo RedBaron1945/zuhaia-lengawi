@@ -4,14 +4,10 @@ import { repository } from '../../services/storageService';
 import {
   PieChart,
   BarChart3,
-  TrendingUp,
   ArrowUpRight,
   ArrowDownRight,
   ArrowRight,
   Trophy,
-  Award,
-  Sparkles,
-  Users,
 } from 'lucide-react';
 
 interface CircleAttendanceComparisonProps {

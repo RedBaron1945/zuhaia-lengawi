@@ -3,18 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { Header } from './components/common/Header';
 import { LoginView } from './components/auth/LoginView';
-import { StudentView } from './components/student/StudentView';
-import { TeacherView } from './components/teacher/TeacherView';
-import { SupervisorView } from './components/supervisor/SupervisorView';
-import { AdminView } from './components/admin/AdminView';
 import { PWAInstallBanner } from './components/common/PWAInstallBanner';
 import { Footer } from './components/common/Footer';
 import { SupportTicketModal } from './components/support/SupportTicketModal';
+
+const StudentView = lazy(() => import('./components/student/StudentView').then((m) => ({ default: m.StudentView })));
+const TeacherView = lazy(() => import('./components/teacher/TeacherView').then((m) => ({ default: m.TeacherView })));
+const SupervisorView = lazy(() => import('./components/supervisor/SupervisorView').then((m) => ({ default: m.SupervisorView })));
+const AdminView = lazy(() => import('./components/admin/AdminView').then((m) => ({ default: m.AdminView })));
 
 function AppContent() {
   const { currentUser, isAuthenticated } = useAuth();
@@ -36,10 +37,18 @@ function AppContent() {
 
       {/* Main Role-Specific View */}
       <main className="flex-1 w-full max-w-full">
-        {currentUser.role === 'student' && <StudentView currentUser={currentUser} />}
-        {currentUser.role === 'teacher' && <TeacherView currentUser={currentUser} />}
-        {currentUser.role === 'supervisor' && <SupervisorView currentUser={currentUser} />}
-        {currentUser.role === 'admin' && <AdminView currentUser={currentUser} />}
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center min-h-[50vh] text-teal-700 text-sm font-bold">
+              جارٍ التحميل...
+            </div>
+          }
+        >
+          {currentUser.role === 'student' && <StudentView currentUser={currentUser} />}
+          {currentUser.role === 'teacher' && <TeacherView currentUser={currentUser} />}
+          {currentUser.role === 'supervisor' && <SupervisorView currentUser={currentUser} />}
+          {currentUser.role === 'admin' && <AdminView currentUser={currentUser} />}
+        </Suspense>
       </main>
 
       {/* Universal Footer with Support Ticket link */}

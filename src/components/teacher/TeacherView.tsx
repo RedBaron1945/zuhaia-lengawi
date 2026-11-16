@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { User, Circle, Student, Teacher } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
@@ -10,7 +10,6 @@ import {
   getCircleDaysOfWeek,
   formatISODate,
   getArabicDayName,
-  formatHijriShortDate,
   isCircleDay,
   WeekDayInfo,
 } from '../../utils/dateUtils';
@@ -25,10 +24,12 @@ import {
   ChevronUp,
   UserX,
   Award,
+  Layers,
 } from 'lucide-react';
 import logoZuhaia from '../../assets/logo-zuhaia-transparent.png';
 import { FirestoreStatusBadge } from '../common/FirestoreStatusBadge';
 import { ExamNominationModal } from './ExamNominationModal';
+import { SupportInboxButton } from '../support/SupportInboxButton';
 
 interface TeacherViewProps {
   currentUser: User;
@@ -59,6 +60,15 @@ const CRITERIA_ROWS: CriterionRowDef[] = [
   { key: 'discipline', label: 'الانضباط', fullVal: 2, partialVal: 1, zeroVal: 0 },
   { key: 'uniform', label: 'الزي', fullVal: 2, partialVal: 1, zeroVal: 0 },
 ];
+
+function formatArabicStudentsCount(count: number): string {
+  const mod100 = count % 100;
+  if (count === 1) return 'طالب';
+  if (count === 2) return 'طالبين';
+  if (mod100 >= 11) return 'طالباً';
+  if (mod100 >= 3 && mod100 <= 10) return 'طلاب';
+  return count === 0 ? 'طلاب' : 'طالب';
+}
 
 export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   const { logout, switchTeacherCircle, switchUser } = useAuth();
@@ -98,12 +108,28 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     );
   }, [circles, selectedCircleId]);
 
+  const activeTeacherCircles: Circle[] = useMemo(() => {
+    const list = repository.getCirclesForTeacher(selectedCircle.teacherId, selectedCircle.id);
+    return list.length > 0 ? list : [selectedCircle];
+  }, [selectedCircle, tick, circles]);
+
+  const activeCircleIds = useMemo(
+    () => activeTeacherCircles.map((c) => c.id),
+    [activeTeacherCircles]
+  );
+  const activeCircleKey = activeCircleIds.join(',');
+  const activeCircleIdsSet = useMemo(() => new Set(activeCircleIds), [activeCircleIds]);
+
   const allCircleStudents: Student[] = useMemo(() => {
-    return repository.getStudents().filter((s: Student) => s.circleId === selectedCircle.id && s.active !== false);
-  }, [selectedCircle.id, tick]);
+    const orderMap = new Map(activeCircleIds.map((id, index) => [id, index]));
+    return repository
+      .getStudents()
+      .filter((s: Student) => activeCircleIdsSet.has(s.circleId) && s.active !== false)
+      .sort((a, b) => (orderMap.get(a.circleId) ?? 99) - (orderMap.get(b.circleId) ?? 99));
+  }, [activeCircleIds, activeCircleIdsSet, tick]);
 
   // Auto-open target date on load
-  const getInitialDate = (days: WeekDayInfo[], circleId: string, students: Student[]) => {
+  const getInitialDate = (days: WeekDayInfo[], circleIds: string | string[], students: Student[]) => {
     const todayStr = formatISODate(new Date());
     const todayMatch = days.find((d) => d.date === todayStr);
 
@@ -112,7 +138,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     }
 
     for (const d of days) {
-      const evals = repository.getEvaluationsForCircleAndDate(circleId, d.date);
+      const evals = repository.getEvaluationsForCircleAndDate(circleIds, d.date);
       const recordedCount = new Set(evals.filter((e) => students.some((s) => s.id === e.studentId)).map((e) => e.studentId)).size;
       if (students.length > 0 && recordedCount < students.length) {
         return d.date;
@@ -123,7 +149,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   };
 
   const [selectedDate, setSelectedDate] = useState<string>(() =>
-    getInitialDate(weekDays, selectedCircle.id, repository.getStudents().filter((s: Student) => s.circleId === selectedCircle.id && s.active !== false))
+    getInitialDate(weekDays, activeCircleIds, allCircleStudents)
   );
 
   const [activeTab, setActiveTab] = useState<'daily' | 'weekly_summary' | 'students_list'>('daily');
@@ -136,8 +162,9 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
 
   // Sync circle if currentUser changes
   useEffect(() => {
-    if (currentUser.circleId && currentUser.circleId !== selectedCircleId) {
-      setSelectedCircleId(currentUser.circleId);
+    if (currentUser.circleId) {
+      const targetCircleId = currentUser.circleId;
+      setSelectedCircleId((prev) => (prev !== targetCircleId ? targetCircleId : prev));
     }
   }, [currentUser.circleId]);
 
@@ -151,10 +178,18 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   }, []);
 
   const handleWeekChange = (newWeekStart: Date) => {
+    flushPendingSyncs();
     setCurrentWeekStart(newWeekStart);
     const newDays = getCircleDaysOfWeek(newWeekStart);
-    const initialDate = getInitialDate(newDays, selectedCircle.id, allCircleStudents);
+    const initialDate = getInitialDate(newDays, activeCircleIds, allCircleStudents);
     setSelectedDate(initialDate);
+  };
+
+  const handleSelectDate = (date: string) => {
+    if (date !== selectedDate) {
+      flushPendingSyncs();
+    }
+    setSelectedDate(date);
   };
 
   // Filter students by search
@@ -167,14 +202,14 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   // Date evaluations
   const weekDatesList = weekDays.map((d) => d.date);
   const weeklyEvaluations = selectedCircle
-    ? repository.getEvaluationsForCircleAndWeek(selectedCircle.id, weekDatesList)
+    ? repository.getEvaluationsForCircleAndWeek(activeCircleIds, weekDatesList)
     : [];
 
-  // Accurate day evaluation counts
+  // Accurate day evaluation counts (will reflect optimistic drafts for selectedDate below)
   const dayEvaluationCounts: Record<string, { recorded: number; total: number }> = {};
   weekDays.forEach((wd) => {
     const evalsForDay = selectedCircle
-      ? repository.getEvaluationsForCircleAndDate(selectedCircle.id, wd.date)
+      ? repository.getEvaluationsForCircleAndDate(activeCircleIds, wd.date)
       : [];
     const recordedIds = new Set(
       evalsForDay.filter((e) => currentStudentIds.has(e.studentId)).map((e) => e.studentId)
@@ -189,11 +224,13 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   const getInitialDrafts = (
     date: string,
     students: Student[],
-    circleId: string = selectedCircle.id
+    circleIds: string[] = activeCircleIds
   ): Record<string, StudentCriterionDraft> => {
     // Clean up any stale draft keys from localStorage to prevent resurrection
     try {
-      localStorage.removeItem(`teacher_daily_draft_${circleId}_${date}`);
+      circleIds.forEach((cId) => {
+        localStorage.removeItem(`teacher_daily_draft_${cId}_${date}`);
+      });
     } catch {
       // ignore
     }
@@ -223,43 +260,159 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   };
 
   const [draftEvaluations, setDraftEvaluations] = useState<Record<string, StudentCriterionDraft>>(() =>
-    getInitialDrafts(selectedDate, allCircleStudents, selectedCircle.id)
+    getInitialDrafts(selectedDate, allCircleStudents, activeCircleIds)
   );
 
   // Track selection key so cards collapse only when date or circle changes, not on reactive tick
-  const prevSelectionKey = useRef(`${selectedCircle.id}_${selectedDate}`);
+  const prevSelectionKey = useRef(`${activeCircleKey}_${selectedDate}`);
   const isLocalActionRef = useRef(false);
+
+  // Per-student 1200ms debounced sync buffer so 5 criterion taps flush as 1 Firestore cycle
+  interface PendingStudentSync {
+    studentId: string;
+    circleId: string;
+    date: string;
+    teacherName: string;
+    teacherId?: string;
+    draft: StudentCriterionDraft;
+  }
+  const EVAL_SYNC_DEBOUNCE_MS = 1200;
+  const pendingSyncTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pendingStudentSyncsRef = useRef<Map<string, PendingStudentSync>>(new Map());
+
+  const persistSingleStudentDraft = (entry: PendingStudentSync) => {
+    try {
+      localStorage.removeItem(`teacher_daily_draft_${entry.circleId}_${entry.date}`);
+    } catch {
+      // ignore
+    }
+
+    const d = entry.draft;
+    const hasAny =
+      (d.attendance !== null && d.attendance !== undefined) ||
+      (d.memorization !== null && d.memorization !== undefined) ||
+      (d.revision !== null && d.revision !== undefined) ||
+      (d.discipline !== null && d.discipline !== undefined) ||
+      (d.uniform !== null && d.uniform !== undefined);
+
+    if (hasAny) {
+      repository.saveDailyEvaluation({
+        studentId: entry.studentId,
+        circleId: entry.circleId,
+        date: entry.date,
+        dayName: getArabicDayName(entry.date),
+        attendance: d.attendance ?? null,
+        disciplineScore: typeof d.discipline === 'number' ? d.discipline : null,
+        uniformScore: typeof d.uniform === 'number' ? d.uniform : null,
+        memorizationScore: typeof d.memorization === 'number' ? d.memorization : null,
+        revisionScore: typeof d.revision === 'number' ? d.revision : null,
+        teacherName: entry.teacherName,
+        teacherId: entry.teacherId,
+      });
+    } else {
+      repository.deleteDailyEvaluation({
+        studentId: entry.studentId,
+        date: entry.date,
+        teacherName: entry.teacherName,
+      });
+    }
+  };
+
+  const flushPendingSyncs = useCallback(() => {
+    pendingSyncTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+    pendingSyncTimersRef.current.clear();
+
+    if (pendingStudentSyncsRef.current.size === 0) return;
+    const entries = Array.from(pendingStudentSyncsRef.current.values());
+    pendingStudentSyncsRef.current.clear();
+
+    isLocalActionRef.current = true;
+    entries.forEach((entry) => persistSingleStudentDraft(entry));
+    setTick((t) => t + 1);
+  }, []);
+
+  const scheduleStudentSync = (studentId: string, studentDraft: StudentCriterionDraft) => {
+    const studentCircleId =
+      allCircleStudents.find((s) => s.id === studentId)?.circleId || selectedCircle.id;
+    const targetCircleObj =
+      activeTeacherCircles.find((c) => c.id === studentCircleId) || selectedCircle;
+    const syncKey = `${studentCircleId}::${selectedDate}::${studentId}`;
+    const existingTimer = pendingSyncTimersRef.current.get(syncKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    pendingStudentSyncsRef.current.set(syncKey, {
+      studentId,
+      circleId: studentCircleId,
+      date: selectedDate,
+      teacherName: targetCircleObj.teacherName,
+      teacherId: targetCircleObj.teacherId,
+      draft: studentDraft,
+    });
+
+    const timer = setTimeout(() => {
+      pendingSyncTimersRef.current.delete(syncKey);
+      const pending = pendingStudentSyncsRef.current.get(syncKey);
+      pendingStudentSyncsRef.current.delete(syncKey);
+      if (!pending) return;
+
+      isLocalActionRef.current = true;
+      persistSingleStudentDraft(pending);
+      setTick((t) => t + 1);
+    }, EVAL_SYNC_DEBOUNCE_MS);
+
+    pendingSyncTimersRef.current.set(syncKey, timer);
+  };
+
+  // Flush any buffered taps if app is backgrounded, hidden, or unmounted
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushPendingSyncs();
+      }
+    };
+    const handlePageHide = () => {
+      flushPendingSyncs();
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      flushPendingSyncs();
+    };
+  }, [flushPendingSyncs]);
 
   // Re-sync drafts and fold cards by default when selectedDate, circle, or database tick changes
   useEffect(() => {
-    const currentKey = `${selectedCircle.id}_${selectedDate}`;
+    const currentKey = `${activeCircleKey}_${selectedDate}`;
     const dateOrCircleChanged = prevSelectionKey.current !== currentKey;
+    const freshCircleIds = activeCircleKey.split(',').filter(Boolean);
+    const freshCircleIdsSet = new Set(freshCircleIds);
 
     if (dateOrCircleChanged) {
       prevSelectionKey.current = currentKey;
-      const freshStudents = repository.getStudents().filter((s: Student) => s.circleId === selectedCircle.id && s.active !== false);
-      setDraftEvaluations(getInitialDrafts(selectedDate, freshStudents, selectedCircle.id));
+      const freshStudents = repository
+        .getStudents()
+        .filter((s: Student) => freshCircleIdsSet.has(s.circleId) && s.active !== false);
+      setDraftEvaluations(getInitialDrafts(selectedDate, freshStudents, freshCircleIds));
       setExpandedStudentId(null);
     } else if (!isLocalActionRef.current) {
-      // Re-sync from external change (e.g. Firestore remote snapshot)
-      const freshStudents = repository.getStudents().filter((s: Student) => s.circleId === selectedCircle.id && s.active !== false);
-      setDraftEvaluations(getInitialDrafts(selectedDate, freshStudents, selectedCircle.id));
+      // Re-sync from external change (e.g. Firestore remote snapshot), preserving any unsynced buffered local taps
+      const freshStudents = repository
+        .getStudents()
+        .filter((s: Student) => freshCircleIdsSet.has(s.circleId) && s.active !== false);
+      const nextDrafts = getInitialDrafts(selectedDate, freshStudents, freshCircleIds);
+      pendingStudentSyncsRef.current.forEach((pending) => {
+        if (freshCircleIdsSet.has(pending.circleId) && pending.date === selectedDate) {
+          nextDrafts[pending.studentId] = pending.draft;
+        }
+      });
+      setDraftEvaluations(nextDrafts);
     }
     isLocalActionRef.current = false;
-  }, [selectedDate, selectedCircle.id, tick]);
-
-  // Helper: check if a student has all 5 criteria recorded
-  const isStudentFullyRecorded = (studentId: string, drafts: Record<string, StudentCriterionDraft> = draftEvaluations) => {
-    const d = drafts[studentId];
-    if (!d) return false;
-    return (
-      d.attendance !== null && d.attendance !== undefined &&
-      d.memorization !== null && d.memorization !== undefined &&
-      d.revision !== null && d.revision !== undefined &&
-      d.discipline !== null && d.discipline !== undefined &&
-      d.uniform !== null && d.uniform !== undefined
-    );
-  };
+  }, [selectedDate, activeCircleKey, tick]);
 
   // Helper: count recorded criteria for a student
   const getStudentRecordedCount = (studentId: string, drafts: Record<string, StudentCriterionDraft> = draftEvaluations) => {
@@ -274,21 +427,41 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     return count;
   };
 
-  // Auto-sync function to persist evaluations in repository immediately
+  // Reflect buffered drafts immediately in DateNavigator count for selectedDate
+  if (dayEvaluationCounts[selectedDate]) {
+    let bufferedRecorded = 0;
+    allCircleStudents.forEach((s) => {
+      if (getStudentRecordedCount(s.id, draftEvaluations) > 0) {
+        bufferedRecorded++;
+      }
+    });
+    dayEvaluationCounts[selectedDate] = {
+      recorded: bufferedRecorded,
+      total: allCircleStudents.length,
+    };
+  }
+
+  // Immediate bulk/single-student persistence (flushes pending debounce timers first)
   const autoSyncToStorage = (
     updatedDrafts: Record<string, StudentCriterionDraft>,
     targetStudentId?: string
   ) => {
-    isLocalActionRef.current = true;
-
-    // Remove any legacy draft key so it never resurrects
-    try {
-      localStorage.removeItem(`teacher_daily_draft_${selectedCircle.id}_${selectedDate}`);
-    } catch {
-      // ignore
+    if (!targetStudentId) {
+      pendingSyncTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+      pendingSyncTimersRef.current.clear();
+      pendingStudentSyncsRef.current.clear();
+    } else {
+      const studentCircleId =
+        allCircleStudents.find((s) => s.id === targetStudentId)?.circleId || selectedCircle.id;
+      const syncKey = `${studentCircleId}::${selectedDate}::${targetStudentId}`;
+      const existingTimer = pendingSyncTimersRef.current.get(syncKey);
+      if (existingTimer) clearTimeout(existingTimer);
+      pendingSyncTimersRef.current.delete(syncKey);
+      pendingStudentSyncsRef.current.delete(syncKey);
     }
 
-    const accurateDayName = getArabicDayName(selectedDate);
+    isLocalActionRef.current = true;
+
     const studentsToProcess = targetStudentId
       ? allCircleStudents.filter((s) => s.id === targetStudentId)
       : allCircleStudents;
@@ -296,91 +469,68 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     studentsToProcess.forEach((student) => {
       const d = updatedDrafts[student.id];
       if (!d) return;
-
-      const hasAny =
-        (d.attendance !== null && d.attendance !== undefined) ||
-        (d.memorization !== null && d.memorization !== undefined) ||
-        (d.revision !== null && d.revision !== undefined) ||
-        (d.discipline !== null && d.discipline !== undefined) ||
-        (d.uniform !== null && d.uniform !== undefined);
-
-      if (hasAny) {
-        repository.saveDailyEvaluation({
-          studentId: student.id,
-          circleId: selectedCircle.id,
-          date: selectedDate,
-          dayName: accurateDayName,
-          attendance: d.attendance ?? null,
-          disciplineScore: typeof d.discipline === 'number' ? d.discipline : null,
-          uniformScore: typeof d.uniform === 'number' ? d.uniform : null,
-          memorizationScore: typeof d.memorization === 'number' ? d.memorization : null,
-          revisionScore: typeof d.revision === 'number' ? d.revision : null,
-          teacherName: selectedCircle.teacherName,
-          teacherId: selectedCircle.teacherId,
-        });
-      } else {
-        // Completely purge evaluation and transactions from storage and Firestore
-        repository.deleteDailyEvaluation({
-          studentId: student.id,
-          date: selectedDate,
-          teacherName: selectedCircle.teacherName,
-        });
-      }
+      const targetCircleObj =
+        activeTeacherCircles.find((c) => c.id === student.circleId) || selectedCircle;
+      persistSingleStudentDraft({
+        studentId: student.id,
+        circleId: student.circleId || selectedCircle.id,
+        date: selectedDate,
+        teacherName: targetCircleObj.teacherName,
+        teacherId: targetCircleObj.teacherId,
+        draft: d,
+      });
     });
 
     setTick((t) => t + 1);
   };
 
-  // Action to reset/clear evaluation for a student completely
-  const handleClearStudentEvaluation = (studentId: string, studentName: string) => {
+  // Action to reset/clear evaluation for a student completely (debounced)
+  const handleClearStudentEvaluation = (studentId: string, _studentName: string) => {
     if (!isSelectedDateCircleDay) {
       showToast('الرصد متاح فقط لأيام الحلقات من الأحد إلى الأربعاء', 'error');
       return;
     }
 
-    setDraftEvaluations((prev) => {
-      const updated: Record<string, StudentCriterionDraft> = {
-        ...prev,
-        [studentId]: {
-          attendance: null,
-          memorization: null,
-          revision: null,
-          discipline: null,
-          uniform: null,
-        },
-      };
+    const clearedDraft: StudentCriterionDraft = {
+      attendance: null,
+      memorization: null,
+      revision: null,
+      discipline: null,
+      uniform: null,
+    };
 
-      autoSyncToStorage(updated, studentId);
-      return updated;
-    });
+    const updated: Record<string, StudentCriterionDraft> = {
+      ...draftEvaluations,
+      [studentId]: clearedDraft,
+    };
+    setDraftEvaluations(updated);
+    scheduleStudentSync(studentId, clearedDraft);
   };
 
   // Dedicated double-click handler on any criterion button: unconditionally resets that item to null
   const handleDoubleClickCriterion = (studentId: string, key: CriterionType) => {
     if (!isSelectedDateCircleDay) return;
 
-    setDraftEvaluations((prev) => {
-      const current = prev[studentId] || {
-        attendance: null,
-        memorization: null,
-        revision: null,
-        discipline: null,
-        uniform: null,
-      };
+    const current = draftEvaluations[studentId] || {
+      attendance: null,
+      memorization: null,
+      revision: null,
+      discipline: null,
+      uniform: null,
+    };
 
-      const updatedStudent: StudentCriterionDraft = {
-        ...current,
-        [key]: null,
-      };
+    const updatedStudent: StudentCriterionDraft = {
+      ...current,
+      [key]: null,
+    };
 
-      const updated: Record<string, StudentCriterionDraft> = {
-        ...prev,
-        [studentId]: updatedStudent,
-      };
+    const updated: Record<string, StudentCriterionDraft> = {
+      ...draftEvaluations,
+      [studentId]: updatedStudent,
+    };
 
-      autoSyncToStorage(updated, studentId);
-      return updated;
-    });
+    setDraftEvaluations(updated);
+    scheduleStudentSync(studentId, updatedStudent);
   };
 
   // Button «الكل كامل ✅» at the top - with two clicks/second click, it undoes/resets for all!
@@ -446,33 +596,30 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
       return;
     }
 
-    setDraftEvaluations((prev) => {
-      const current = prev[studentId] || {
-        attendance: null,
-        memorization: null,
-        revision: null,
-        discipline: null,
-        uniform: null,
-      };
+    const current = draftEvaluations[studentId] || {
+      attendance: null,
+      memorization: null,
+      revision: null,
+      discipline: null,
+      uniform: null,
+    };
 
-      const isAlreadySelected = current[key] === targetVal;
-      // With two clicks / clicking the selected button again, it resets it to null!
-      const nextVal = isAlreadySelected ? null : targetVal;
+    const isAlreadySelected = current[key] === targetVal;
+    // With two clicks / clicking the selected button again, it resets it to null!
+    const nextVal = isAlreadySelected ? null : targetVal;
 
-      const updatedStudent: StudentCriterionDraft = {
-        ...current,
-        [key]: nextVal,
-      };
+    const updatedStudent: StudentCriterionDraft = {
+      ...current,
+      [key]: nextVal,
+    };
 
-      const updated: Record<string, StudentCriterionDraft> = {
-        ...prev,
-        [studentId]: updatedStudent,
-      };
+    const updated: Record<string, StudentCriterionDraft> = {
+      ...draftEvaluations,
+      [studentId]: updatedStudent,
+    };
 
-      autoSyncToStorage(updated, studentId);
-
-      return updated;
-    });
+    setDraftEvaluations(updated);
+    scheduleStudentSync(studentId, updatedStudent);
   };
 
   // Text button «غائب» sets all 5 items to 0 (absent / 0 / 0 / 0 / 0)
@@ -497,19 +644,21 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
       return;
     }
 
+    const absentDraft: StudentCriterionDraft = {
+      attendance: 'absent',
+      memorization: 0,
+      revision: 0,
+      discipline: 0,
+      uniform: 0,
+    };
+
     const updated: Record<string, StudentCriterionDraft> = {
       ...draftEvaluations,
-      [studentId]: {
-        attendance: 'absent',
-        memorization: 0,
-        revision: 0,
-        discipline: 0,
-        uniform: 0,
-      },
+      [studentId]: absentDraft,
     };
 
     setDraftEvaluations(updated);
-    autoSyncToStorage(updated, studentId);
+    scheduleStudentSync(studentId, absentDraft);
   };
 
   // Quick button inside card: set student full score (2 for all)
@@ -534,32 +683,33 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
       return;
     }
 
+    const fullDraft: StudentCriterionDraft = {
+      attendance: 'early',
+      memorization: 2,
+      revision: 2,
+      discipline: 2,
+      uniform: 2,
+    };
+
     const updated: Record<string, StudentCriterionDraft> = {
       ...draftEvaluations,
-      [studentId]: {
-        attendance: 'early',
-        memorization: 2,
-        revision: 2,
-        discipline: 2,
-        uniform: 2,
-      },
+      [studentId]: fullDraft,
     };
 
     setDraftEvaluations(updated);
-    autoSyncToStorage(updated, studentId);
+    scheduleStudentSync(studentId, fullDraft);
   };
 
   // Non-current day line logic
   const todayISO = formatISODate(new Date());
-  const isSelectedDateToday = selectedDate === todayISO;
   const isSelectedDateCircleDay = isCircleDay(selectedDate);
   const dayMatch = weekDays.find((d) => d.date === selectedDate);
   const selectedDayInfo = {
     dayName: dayMatch?.dayName || getArabicDayName(selectedDate),
-    hijriFormatted: dayMatch?.hijriFormatted || formatHijriShortDate(selectedDate),
   };
 
   const handleResetToToday = () => {
+    flushPendingSyncs();
     const now = new Date();
     const sunday = getSundayOfWeek(now);
     const days = getCircleDaysOfWeek(sunday);
@@ -607,10 +757,12 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
             <div className="flex flex-col min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-extrabold text-base text-slate-900 truncate">
-                  {selectedCircle.name}
+                  {activeTeacherCircles.length > 1
+                    ? activeTeacherCircles.map((c) => c.name).join(' · ')
+                    : selectedCircle.name}
                 </span>
                 <span className="text-[11px] px-2 py-0.5 rounded-full font-bold tabular-nums bg-teal-50 text-teal-800 border border-teal-200 shrink-0">
-                  {allCircleStudents.length} طلاب
+                  {allCircleStudents.length} {formatArabicStudentsCount(allCircleStudents.length)}
                 </span>
               </div>
               <span className="text-xs font-bold text-slate-500 truncate mt-0.5">
@@ -619,16 +771,17 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
             </div>
           </div>
 
-          {/* Top Actions: Live Firestore Status Badge + Menu */}
+          {/* Top Actions: Live Firestore Status Badge + Support Inbox + Menu */}
           <div className="flex items-center gap-1.5 shrink-0">
             <FirestoreStatusBadge compact />
+            <SupportInboxButton className="bg-slate-50 border border-slate-200" />
 
             {/* Menu button */}
             <div className="relative shrink-0">
               <button
                 type="button"
                 onClick={() => setShowHeaderMenu(!showHeaderMenu)}
-                className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 flex items-center justify-center border border-slate-200 transition-colors cursor-pointer"
+                className="w-10 h-10 min-w-[40px] min-h-[40px] rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 flex items-center justify-center border border-slate-200 transition-colors cursor-pointer"
                 title="القائمة"
                 aria-label="القائمة"
               >
@@ -645,6 +798,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
                         key={c.id}
                         type="button"
                         onClick={() => {
+                          flushPendingSyncs();
                           setSelectedCircleId(c.id);
                           switchTeacherCircle(c.id);
                           setShowHeaderMenu(false);
@@ -662,6 +816,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
                       <button
                         type="button"
                         onClick={() => {
+                          flushPendingSyncs();
                           setShowHeaderMenu(false);
                           switchUser('supervisor');
                         }}
@@ -672,6 +827,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
                       <button
                         type="button"
                         onClick={() => {
+                          flushPendingSyncs();
                           setShowHeaderMenu(false);
                           switchUser('admin');
                         }}
@@ -686,6 +842,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
                 <button
                   type="button"
                   onClick={() => {
+                    flushPendingSyncs();
                     setShowHeaderMenu(false);
                     logout();
                   }}
@@ -705,79 +862,72 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
           currentWeekStart={currentWeekStart}
           selectedDate={selectedDate}
           weekDays={weekDays}
-          onSelectDate={setSelectedDate}
+          onSelectDate={handleSelectDate}
           onWeekChange={handleWeekChange}
+          onResetToToday={handleResetToToday}
           dayEvaluationCounts={dayEvaluationCounts}
         />
       </div>
 
-      {/* Non-current day line: «تعرض الآن يوم X · العودة لليوم» */}
-      {!isSelectedDateToday && (
-        <div className="bg-amber-100 border border-amber-300 text-amber-950 px-3.5 py-2.5 rounded-2xl flex items-center justify-between text-xs sm:text-sm font-extrabold shadow-2xs animate-fade-in">
-          <div className="flex items-center gap-1.5 truncate">
-            <AlertTriangle className="w-4 h-4 text-amber-800 shrink-0" />
-            <span className="truncate">
-              تعرض الآن يوم {selectedDayInfo.dayName} ({selectedDayInfo.hijriFormatted})
-            </span>
-          </div>
+      {/* Main Navigation Tabs: «اليوم» · «الأسبوع» · «الطلاب» + «ترشيح للاختبار» */}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+        <div className="bg-slate-200/90 p-1 rounded-2xl grid grid-cols-3 gap-1 flex-1">
           <button
             type="button"
-            onClick={handleResetToToday}
-            className="bg-amber-800 hover:bg-amber-900 text-white px-3 py-1 rounded-xl text-xs font-black transition-colors cursor-pointer shrink-0 underline"
+            onClick={() => {
+              flushPendingSyncs();
+              setActiveTab('daily');
+            }}
+            className={`py-2 px-1.5 rounded-xl text-xs sm:text-sm font-extrabold transition-all min-h-[40px] flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer ${
+              activeTab === 'daily'
+                ? 'bg-white text-teal-950 shadow-2xs font-black'
+                : 'text-slate-700 hover:text-slate-900'
+            }`}
           >
-            العودة لليوم
+            <CheckCheck className="w-4 h-4 text-teal-800 shrink-0" />
+            <span>اليوم</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              flushPendingSyncs();
+              setActiveTab('weekly_summary');
+            }}
+            className={`py-2 px-1.5 rounded-xl text-xs sm:text-sm font-extrabold transition-all min-h-[40px] cursor-pointer flex items-center justify-center whitespace-nowrap ${
+              activeTab === 'weekly_summary'
+                ? 'bg-white text-teal-950 shadow-2xs font-black'
+                : 'text-slate-700 hover:text-slate-900'
+            }`}
+          >
+            <span>الأسبوع</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              flushPendingSyncs();
+              setActiveTab('students_list');
+            }}
+            className={`py-2 px-1.5 rounded-xl text-xs sm:text-sm font-extrabold transition-all min-h-[40px] cursor-pointer flex items-center justify-center whitespace-nowrap tabular-nums ${
+              activeTab === 'students_list'
+                ? 'bg-white text-teal-950 shadow-2xs font-black'
+                : 'text-slate-700 hover:text-slate-900'
+            }`}
+          >
+            <span>الطلاب ({allCircleStudents.length})</span>
           </button>
         </div>
-      )}
 
-      {/* Main Navigation Tabs: «رصد اليوم» · «سجل الأسبوع» · «الطلاب» + «ترشيح للإختبار» */}
-      <div className="bg-slate-200/90 p-1 rounded-2xl flex items-center gap-1 flex-wrap sm:flex-nowrap">
-        <button
-          type="button"
-          onClick={() => setActiveTab('daily')}
-          className={`flex-1 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all min-h-[40px] flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeTab === 'daily'
-              ? 'bg-white text-teal-950 shadow-2xs font-black'
-              : 'text-slate-700 hover:text-slate-900'
-          }`}
-        >
-          <CheckCheck className="w-4 h-4 text-teal-800" />
-          <span>رصد اليوم</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('weekly_summary')}
-          className={`flex-1 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all min-h-[40px] cursor-pointer flex items-center justify-center ${
-            activeTab === 'weekly_summary'
-              ? 'bg-white text-teal-950 shadow-2xs font-black'
-              : 'text-slate-700 hover:text-slate-900'
-          }`}
-        >
-          <span>سجل الأسبوع</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('students_list')}
-          className={`flex-1 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all min-h-[40px] cursor-pointer flex items-center justify-center ${
-            activeTab === 'students_list'
-              ? 'bg-white text-teal-950 shadow-2xs font-black'
-              : 'text-slate-700 hover:text-slate-900'
-          }`}
-        >
-          <span>الطلاب ({allCircleStudents.length})</span>
-        </button>
-
-        {/* زر ترشيح للإختبار في الشريط الرئيسي */}
+        {/* زر ترشيح للاختبار بلون هادئ */}
         <button
           type="button"
           onClick={() => setShowNominationModal(true)}
-          className="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-black transition-all min-h-[40px] cursor-pointer flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 shadow-2xs shrink-0 active:scale-95"
+          className="px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold transition-all min-h-[40px] cursor-pointer flex items-center justify-center gap-1.5 bg-amber-50/90 hover:bg-amber-100/90 text-amber-900 border border-amber-200/90 shadow-2xs shrink-0 active:scale-95"
           title="ترشيح الطلاب لاختبار الأجزاء القرآنية"
         >
-          <Award className="w-4 h-4 text-slate-950 shrink-0" />
-          <span>ترشيح للإختبار</span>
+          <Award className="w-4 h-4 text-amber-700 shrink-0" />
+          <span>ترشيح للاختبار</span>
         </button>
       </div>
 
@@ -803,15 +953,17 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
             </div>
           )}
 
-          {/* Top Bar: زر «الكل كامل ✅» */}
-          <div className="flex items-center gap-2 flex-wrap">
+          {/* Top Bar: زر «الكل كامل» بنفس تصميم زر «ترشيح للاختبار» */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <button
               type="button"
               onClick={handleFillAllFullScore}
               disabled={!isSelectedDateCircleDay}
-              className={`px-4 py-2.5 rounded-2xl bg-teal-800 hover:bg-teal-900 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs active:scale-98 transition-all min-h-[42px] ${
-                !isSelectedDateCircleDay ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-              }`}
+              className={`px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold transition-all min-h-[40px] flex items-center justify-center gap-1.5 border shadow-2xs shrink-0 active:scale-95 ${
+                allAreFull
+                  ? 'bg-teal-100 hover:bg-teal-200/80 text-teal-950 border-teal-300'
+                  : 'bg-teal-50/90 hover:bg-teal-100/90 text-teal-900 border-teal-200/90'
+              } ${!isSelectedDateCircleDay ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
               title={
                 isSelectedDateCircleDay
                   ? allAreFull
@@ -820,223 +972,294 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
                   : 'الرصد متاح فقط من الأحد إلى الأربعاء'
               }
             >
-              <span>الكل كامل ✅</span>
+              <CheckCheck className="w-4 h-4 text-teal-700 shrink-0" />
+              <span>الكل كامل</span>
             </button>
           </div>
 
 
-          {/* Search if students >= 10 */}
           {allCircleStudents.length >= 10 && (
             <div className="relative w-full">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+              <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="بحث باسم الطالب..."
-                className="w-full pr-8 pl-2 py-1.5 text-xs rounded-xl border border-slate-200 bg-white focus:outline-hidden min-h-[36px]"
+                className="w-full pr-9 pl-3 py-2 text-[16px] leading-snug rounded-xl border border-slate-200 bg-white focus:border-teal-600 focus:outline-hidden min-h-[42px]"
+                style={{ fontFamily: 'inherit' }}
               />
             </div>
           )}
 
           {/* قائمة بطاقات الطلاب: مطوية بشكل افتراضي مع إمكانية طي الطالب المحدد بنقرة عليه */}
-          <div className="space-y-2">
-            {circleStudents.length === 0 ? (
-              <div className="bg-white rounded-2xl p-6 text-center border border-slate-200 text-xs text-slate-500 font-bold">
-                {searchQuery ? `لا توجد نتائج مطابقة لـ "${searchQuery}"` : 'لا يوجد طلاب مسجلون بالحلقة حالياً'}
-              </div>
-            ) : (
-              circleStudents.map((student: Student, idx: number) => {
-                const isExpanded = expandedStudentId === student.id;
-                const studentDraft = draftEvaluations[student.id];
-                const recordedCount = getStudentRecordedCount(student.id);
-                const isComplete = recordedCount === 5;
-                const remainingCount = 5 - recordedCount;
+          {(() => {
+            const renderStudentCard = (student: Student, idx: number) => {
+              const isExpanded = expandedStudentId === student.id;
+              const studentDraft = draftEvaluations[student.id];
+              const recordedCount = getStudentRecordedCount(student.id);
+              const isComplete = recordedCount === 5;
 
-                return (
+              return (
+                <div
+                  key={student.id}
+                  className={`bg-white rounded-2xl border transition-all shadow-2xs overflow-hidden ${
+                    isExpanded
+                      ? 'border-teal-600 ring-2 ring-teal-600/10'
+                      : 'border-slate-200/90 hover:border-slate-300'
+                  }`}
+                >
+                  {/* رأس البطاقة: سطر واحد (الاسم + «اكتمل 5/5» أو «بقي N» + زر «غائب» نصي + سهم الفتح/الطي) */}
                   <div
-                    key={student.id}
-                    className={`bg-white rounded-2xl border transition-all shadow-2xs overflow-hidden ${
-                      isExpanded
-                        ? 'border-teal-600 ring-2 ring-teal-600/10'
-                        : 'border-slate-200/90 hover:border-slate-300'
-                    }`}
+                    onClick={() => setExpandedStudentId(isExpanded ? null : student.id)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      handleClearStudentEvaluation(student.id, student.name);
+                    }}
+                    className="px-3 py-2 sm:px-3.5 sm:py-2.5 flex items-center justify-between gap-2 cursor-pointer select-none bg-white hover:bg-slate-50/70 transition-colors"
+                    title={isExpanded ? 'انقر لطي البطاقة (نقرتين للتراجع عن الرصد)' : 'انقر لفتح بطاقة الطالب (نقرتين للتراجع عن الرصد)'}
                   >
-                    {/* رأس البطاقة: سطر واحد (الاسم + «اكتمل 5/5» أو «بقي N» + زر «غائب» نصي + سهم الفتح/الطي) */}
-                    <div
-                      onClick={() => setExpandedStudentId(isExpanded ? null : student.id)}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        handleClearStudentEvaluation(student.id, student.name);
-                      }}
-                      className="p-3 sm:p-3.5 flex items-center justify-between gap-2 cursor-pointer select-none bg-white hover:bg-slate-50/70 transition-colors"
-                      title={isExpanded ? 'انقر لطي البطاقة (نقرتين للتراجع عن الرصد)' : 'انقر لفتح بطاقة الطالب (نقرتين للتراجع عن الرصد)'}
-                    >
-                      {/* Name and index */}
-                      <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
-                        <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-black flex items-center justify-center shrink-0 border border-slate-200 mt-0.5 sm:mt-0">
-                          {idx + 1}
-                        </span>
-                        <span className="font-extrabold text-sm sm:text-base text-slate-900 break-words leading-tight sm:leading-snug">
-                          {student.name}
-                        </span>
-                      </div>
+                    {/* Name and index */}
+                    <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
+                      <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-black flex items-center justify-center shrink-0 border border-slate-200 mt-0.5 sm:mt-0 tabular-nums">
+                        {idx + 1}
+                      </span>
+                      <span className="font-extrabold text-sm sm:text-base text-slate-900 break-words leading-tight sm:leading-snug">
+                        {student.name}
+                      </span>
+                    </div>
 
-                      {/* Status + Quick Undo + Text Absence Button + Chevron */}
-                      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                        {/* الحالة المكتوبة: «اكتمل 5/5» أو «بقي N» */}
-                        {isComplete ? (
-                          <span className="text-[11px] font-black px-2.5 py-0.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-300">
-                            اكتمل 5/5 ✓
-                          </span>
-                        ) : recordedCount > 0 ? (
-                          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-xl bg-amber-50 text-amber-900 border border-amber-300">
-                            رُصد {recordedCount}/5
-                          </span>
+                    {/* Status + Quick Undo + Text Absence Button + Chevron */}
+                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                      {/* الحالة المكتوبة: «اكتمل 5/5» أو «بقي N» */}
+                      {isComplete ? (
+                        <span className="text-[11px] font-black px-2.5 py-0.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-300 tabular-nums">
+                          اكتمل 5/5 ✓
+                        </span>
+                      ) : recordedCount > 0 ? (
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-xl bg-amber-50 text-amber-900 border border-amber-300 tabular-nums">
+                          رُصد {recordedCount}/5
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200">
+                          لم يُرصد
+                        </span>
+                      )}
+
+                      {/* زر «غائب» نصياً يضبط كل البنود على 0 أو يتراجع إذا كان غائباً بالفعل */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMarkStudentAbsent(student.id, student.name);
+                        }}
+                        className={`px-2.5 py-1 rounded-xl text-xs font-black flex items-center gap-1 cursor-pointer transition-all active:scale-95 ${
+                          studentDraft?.attendance === 'absent' && studentDraft?.memorization === 0
+                            ? 'text-white bg-rose-600 hover:bg-rose-700 border border-rose-600 shadow-xs'
+                            : 'text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200'
+                        }`}
+                        title="تسجيل الطالب غائباً (أو انقر نقرتين للتراجع)"
+                      >
+                        <UserX className="w-3.5 h-3.5" />
+                        <span>غائب</span>
+                      </button>
+
+                      {/* السهم للإشارة لفتح/طي البطاقة */}
+                      <div className="w-6 h-6 rounded-lg bg-slate-100 flex items-center justify-center text-slate-600">
+                        {isExpanded ? (
+                          <ChevronUp className="w-4 h-4 stroke-[2.5]" />
                         ) : (
-                          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200">
-                            لم يُرصد
-                          </span>
+                          <ChevronDown className="w-4 h-4 stroke-[2.5]" />
                         )}
+                      </div>
+                    </div>
+                  </div>
 
-                        {/* زر «غائب» نصياً يضبط كل البنود على 0 أو يتراجع إذا كان غائباً بالفعل */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleMarkStudentAbsent(student.id, student.name);
-                          }}
-                          className={`px-2.5 py-1 rounded-xl text-xs font-black flex items-center gap-1 cursor-pointer transition-all active:scale-95 ${
-                            studentDraft?.attendance === 'absent' && studentDraft?.memorization === 0
-                              ? 'text-white bg-rose-600 hover:bg-rose-700 border border-rose-600 shadow-xs'
-                              : 'text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200'
-                          }`}
-                          title="تسجيل الطالب غائباً (أو انقر نقرتين للتراجع)"
-                        >
-                          <UserX className="w-3.5 h-3.5" />
-                          <span>غائب</span>
-                        </button>
+                  {/* محتوى البطاقة المفتوحة: خمسة أسطر للبنود، وكل سطر بثلاثة أزرار واضحة: 2   1   0 */}
+                  {isExpanded && (
+                    <div className="p-3 sm:p-3.5 border-t border-slate-100 bg-slate-50/40 space-y-2 animate-fade-in">
+                      {CRITERIA_ROWS.map((row) => {
+                        const currentVal = studentDraft ? studentDraft[row.key] : null;
 
-                        {/* السهم للإشارة لفتح/طي البطاقة */}
-                        <div className="w-6 h-6 rounded-lg bg-slate-100 flex items-center justify-center text-slate-600">
-                          {isExpanded ? (
-                            <ChevronUp className="w-4 h-4 stroke-[2.5]" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 stroke-[2.5]" />
-                          )}
+                        return (
+                          <div
+                            key={row.key}
+                            className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-200/60 last:border-b-0"
+                          >
+                            {/* اسم البند كاملاً */}
+                            <span className="font-extrabold text-xs sm:text-sm text-slate-800 shrink-0 min-w-[60px] sm:min-w-[70px]">
+                              {row.label}
+                            </span>
+
+                            {/* أزرار 2  1  0 مباشرة */}
+                            <div className="grid grid-cols-3 gap-2 flex-1 max-w-[210px] sm:max-w-[240px]">
+                              {/* 1. القيمة 2 */}
+                              <button
+                                type="button"
+                                style={{ touchAction: 'manipulation' }}
+                                onClick={() => handleSelectCriterionValue(student.id, row.key, row.fullVal)}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDoubleClickCriterion(student.id, row.key);
+                                }}
+                                className={`h-[38px] rounded-xl text-sm font-black border transition-all flex items-center justify-center cursor-pointer select-none active:scale-95 ${
+                                  currentVal === row.fullVal
+                                    ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-500/30'
+                                    : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200'
+                                }`}
+                                title="2 (كاملة) — انقر مرة ثانية أو نقرتين للتراجع عن الرصد"
+                              >
+                                2
+                              </button>
+
+                              {/* 2. القيمة 1 */}
+                              <button
+                                type="button"
+                                style={{ touchAction: 'manipulation' }}
+                                onClick={() => handleSelectCriterionValue(student.id, row.key, row.partialVal)}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDoubleClickCriterion(student.id, row.key);
+                                }}
+                                className={`h-[38px] rounded-xl text-sm font-black border transition-all flex items-center justify-center cursor-pointer select-none active:scale-95 ${
+                                  currentVal === row.partialVal
+                                    ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-400/30'
+                                    : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200'
+                                }`}
+                                title="1 (جزئية) — انقر مرة ثانية أو نقرتين للتراجع عن الرصد"
+                              >
+                                1
+                              </button>
+
+                              {/* 3. القيمة 0 */}
+                              <button
+                                type="button"
+                                style={{ touchAction: 'manipulation' }}
+                                onClick={() => handleSelectCriterionValue(student.id, row.key, row.zeroVal)}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDoubleClickCriterion(student.id, row.key);
+                                }}
+                                className={`h-[38px] rounded-xl text-sm font-black border transition-all flex items-center justify-center cursor-pointer select-none active:scale-95 ${
+                                  currentVal === row.zeroVal
+                                    ? 'bg-rose-600 text-white border-rose-600 shadow-xs ring-2 ring-rose-500/30'
+                                    : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200'
+                                }`}
+                                title="0 (لا شيء) — انقر مرة ثانية أو نقرتين للتراجع عن الرصد"
+                              >
+                                0
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {/* شريط الإجراءات السريعة أسفل البطاقة المفتوحة */}
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200/80 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => handleSetStudentAllTop(student.id, student.name)}
+                            className="px-3 py-1.5 rounded-xl text-xs font-black bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95 transition-all"
+                            title="تعيين الدرجة الكاملة لكافة البنود (انقر مرة ثانية للتراجع)"
+                          >
+                            <span>الدرجة الكاملة (2 للكل)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleMarkStudentAbsent(student.id, student.name)}
+                            className="px-3 py-1.5 rounded-xl text-xs font-black text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95 transition-all"
+                            title="تسجيل غائب لجميع البنود (انقر مرة ثانية للتراجع)"
+                          >
+                            <UserX className="w-3.5 h-3.5" />
+                            <span>تسجيل غائب (0 للكل)</span>
+                          </button>
                         </div>
                       </div>
                     </div>
+                  )}
+                </div>
+              );
+            };
 
-                    {/* محتوى البطاقة المفتوحة: خمسة أسطر للبنود، وكل سطر بثلاثة أزرار واضحة: 2   1   0 */}
-                    {isExpanded && (
-                      <div className="p-3 sm:p-3.5 border-t border-slate-100 bg-slate-50/40 space-y-2 animate-fade-in">
-                        {CRITERIA_ROWS.map((row) => {
-                          const currentVal = studentDraft ? studentDraft[row.key] : null;
+            if (circleStudents.length === 0) {
+              return (
+                <div className="bg-white rounded-2xl p-6 text-center border border-slate-200 text-xs text-slate-500 font-bold">
+                  {searchQuery ? `لا توجد نتائج مطابقة لـ "${searchQuery}"` : 'لا يوجد طلاب مسجلون بالحلقة حالياً'}
+                </div>
+              );
+            }
 
-                          return (
-                            <div
-                              key={row.key}
-                              className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-200/60 last:border-b-0"
+            if (activeTeacherCircles.length > 1) {
+              const sections = activeTeacherCircles
+                .map((c) => ({
+                  circle: c,
+                  students: circleStudents.filter((s) => s.circleId === c.id),
+                  allInCircle: allCircleStudents.filter((s) => s.circleId === c.id),
+                }))
+                .filter((sec) => sec.students.length > 0 || !searchQuery.trim());
+
+              return (
+                <div className="space-y-2">
+                  {sections.map((sec, secIdx) => {
+                    const isFirst = secIdx === 0;
+                    const recordedInCircle = sec.allInCircle.filter(
+                      (s) => getStudentRecordedCount(s.id, draftEvaluations) > 0
+                    ).length;
+
+                    return (
+                      <div
+                        key={sec.circle.id}
+                        className={secIdx > 0 ? 'mt-6 pt-5 border-t-2 border-dashed border-slate-300' : ''}
+                      >
+                        <div
+                          className={`mb-2.5 px-3.5 py-2.5 rounded-2xl border flex items-center justify-between gap-2 shadow-2xs ${
+                            isFirst
+                              ? 'bg-teal-50/90 border-teal-200/90 text-teal-950'
+                              : 'bg-indigo-50/90 border-indigo-200/90 text-indigo-950'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Layers
+                              className={`w-4 h-4 shrink-0 ${
+                                isFirst ? 'text-teal-700' : 'text-indigo-700'
+                              }`}
+                            />
+                            <span className="font-black text-sm truncate">{sec.circle.name}</span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0 text-[11px] font-extrabold tabular-nums">
+                            <span
+                              className={
+                                isFirst
+                                  ? 'px-2 py-0.5 rounded-lg bg-white/80 text-teal-800 border border-teal-200/80'
+                                  : 'px-2 py-0.5 rounded-lg bg-white/80 text-indigo-800 border border-indigo-200/80'
+                              }
                             >
-                              {/* اسم البند كاملاً */}
-                              <span className="font-extrabold text-xs sm:text-sm text-slate-800 shrink-0 min-w-[60px] sm:min-w-[70px]">
-                                {row.label}
-                              </span>
-
-                              {/* أزرار 2  1  0 مباشرة */}
-                              <div className="grid grid-cols-3 gap-2 flex-1 max-w-[210px] sm:max-w-[240px]">
-                                {/* 1. القيمة 2 */}
-                                <button
-                                  type="button"
-                                  style={{ touchAction: 'manipulation' }}
-                                  onClick={() => handleSelectCriterionValue(student.id, row.key, row.fullVal)}
-                                  onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDoubleClickCriterion(student.id, row.key);
-                                  }}
-                                  className={`h-[38px] rounded-xl text-sm font-black border transition-all flex items-center justify-center cursor-pointer select-none active:scale-95 ${
-                                    currentVal === row.fullVal
-                                      ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-500/30'
-                                      : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200'
-                                  }`}
-                                  title="2 (كاملة) — انقر مرة ثانية أو نقرتين للتراجع عن الرصد"
-                                >
-                                  2
-                                </button>
-
-                                {/* 2. القيمة 1 */}
-                                <button
-                                  type="button"
-                                  style={{ touchAction: 'manipulation' }}
-                                  onClick={() => handleSelectCriterionValue(student.id, row.key, row.partialVal)}
-                                  onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDoubleClickCriterion(student.id, row.key);
-                                  }}
-                                  className={`h-[38px] rounded-xl text-sm font-black border transition-all flex items-center justify-center cursor-pointer select-none active:scale-95 ${
-                                    currentVal === row.partialVal
-                                      ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-400/30'
-                                      : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200'
-                                  }`}
-                                  title="1 (جزئية) — انقر مرة ثانية أو نقرتين للتراجع عن الرصد"
-                                >
-                                  1
-                                </button>
-
-                                {/* 3. القيمة 0 */}
-                                <button
-                                  type="button"
-                                  style={{ touchAction: 'manipulation' }}
-                                  onClick={() => handleSelectCriterionValue(student.id, row.key, row.zeroVal)}
-                                  onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDoubleClickCriterion(student.id, row.key);
-                                  }}
-                                  className={`h-[38px] rounded-xl text-sm font-black border transition-all flex items-center justify-center cursor-pointer select-none active:scale-95 ${
-                                    currentVal === row.zeroVal
-                                      ? 'bg-rose-600 text-white border-rose-600 shadow-xs ring-2 ring-rose-500/30'
-                                      : 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-200'
-                                  }`}
-                                  title="0 (لا شيء) — انقر مرة ثانية أو نقرتين للتراجع عن الرصد"
-                                >
-                                  0
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {/* شريط الإجراءات السريعة أسفل البطاقة المفتوحة */}
-                        <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200/80 flex-wrap">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <button
-                              type="button"
-                              onClick={() => handleSetStudentAllTop(student.id, student.name)}
-                              className="px-3 py-1.5 rounded-xl text-xs font-black bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95 transition-all"
-                              title="تعيين الدرجة الكاملة لكافة البنود (انقر مرة ثانية للتراجع)"
-                            >
-                              <span>الدرجة الكاملة (2 للكل)</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleMarkStudentAbsent(student.id, student.name)}
-                              className="px-3 py-1.5 rounded-xl text-xs font-black text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95 transition-all"
-                              title="تسجيل غائب لجميع البنود (انقر مرة ثانية للتراجع)"
-                            >
-                              <UserX className="w-3.5 h-3.5" />
-                              <span>تسجيل غائب (0 للكل)</span>
-                            </button>
+                              رُصد {recordedInCircle} / {sec.allInCircle.length}
+                            </span>
+                            <span className="text-slate-600">
+                              {sec.allInCircle.length} {formatArabicStudentsCount(sec.allInCircle.length)}
+                            </span>
                           </div>
                         </div>
+
+                        <div className="space-y-1.5">
+                          {sec.students.map((student, idx) => renderStudentCard(student, idx))}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
+                    );
+                  })}
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-1.5">
+                {circleStudents.map((student: Student, idx: number) => renderStudentCard(student, idx))}
+              </div>
+            );
+          })()}
 
         </div>
       )}
@@ -1047,38 +1270,104 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
           students={allCircleStudents}
           weekDays={weekDays}
           weeklyEvaluations={weeklyEvaluations}
-          onSelectDay={setSelectedDate}
+          onSelectDay={(date) => {
+            handleSelectDate(date);
+            setActiveTab('daily');
+          }}
           currentWeekStart={currentWeekStart}
           onWeekChange={handleWeekChange}
+          circles={activeTeacherCircles}
         />
       )}
 
       {/* Content View 3: قائمة الطلاب */}
       {activeTab === 'students_list' && (
         <div className="bg-white rounded-3xl p-4 border border-slate-200/90 shadow-xs space-y-3">
-          <h3 className="text-sm font-extrabold text-slate-900">
-            طلاب {selectedCircle.name} ({allCircleStudents.length} طلاب)
-          </h3>
-          <div className="space-y-2">
-            {allCircleStudents.map((s: Student, idx: number) => (
-              <div
-                key={s.id}
-                className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs"
-              >
-                <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
-                  <span className="w-6 h-6 rounded-lg bg-teal-100 text-teal-950 font-bold flex items-center justify-center text-[11px] shrink-0 mt-0.5 sm:mt-0">
-                    {idx + 1}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <span className="font-bold text-slate-800 block break-words leading-snug">{s.name}</span>
-                  </div>
-                </div>
-                <div className="text-left font-black text-teal-900">
-                  {s.currentPoints} نقطة
-                </div>
+          {activeTeacherCircles.length > 1 ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                <h3 className="text-sm font-extrabold text-slate-900 tabular-nums">
+                  جميع طلاب المعلم ({allCircleStudents.length} {formatArabicStudentsCount(allCircleStudents.length)})
+                </h3>
               </div>
-            ))}
-          </div>
+              {activeTeacherCircles.map((circle, cIdx) => {
+                const groupStudents = allCircleStudents.filter((s) => s.circleId === circle.id);
+                const isFirst = cIdx === 0;
+                return (
+                  <div
+                    key={circle.id}
+                    className={cIdx > 0 ? 'pt-4 border-t-2 border-dashed border-slate-200' : ''}
+                  >
+                    <div
+                      className={`mb-2.5 px-3 py-2 rounded-xl border flex items-center justify-between gap-2 ${
+                        isFirst
+                          ? 'bg-teal-50/80 border-teal-200/80 text-teal-950'
+                          : 'bg-indigo-50/80 border-indigo-200/80 text-indigo-950'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Layers
+                          className={`w-4 h-4 shrink-0 ${
+                            isFirst ? 'text-teal-700' : 'text-indigo-700'
+                          }`}
+                        />
+                        <span className="font-black text-xs sm:text-sm truncate">{circle.name}</span>
+                      </div>
+                      <span className="text-[11px] font-extrabold tabular-nums shrink-0">
+                        {groupStudents.length} {formatArabicStudentsCount(groupStudents.length)}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {groupStudents.map((s: Student, idx: number) => (
+                        <div
+                          key={s.id}
+                          className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs"
+                        >
+                          <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
+                            <span className="w-6 h-6 rounded-lg bg-teal-100 text-teal-950 font-bold flex items-center justify-center text-[11px] shrink-0 mt-0.5 sm:mt-0 tabular-nums">
+                              {idx + 1}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <span className="font-bold text-slate-800 block break-words leading-snug">{s.name}</span>
+                            </div>
+                          </div>
+                          <div className="text-left font-black text-teal-900 tabular-nums">
+                            {s.currentPoints} نقطة
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <>
+              <h3 className="text-sm font-extrabold text-slate-900 tabular-nums">
+                طلاب {selectedCircle.name} ({allCircleStudents.length} {formatArabicStudentsCount(allCircleStudents.length)})
+              </h3>
+              <div className="space-y-2">
+                {allCircleStudents.map((s: Student, idx: number) => (
+                  <div
+                    key={s.id}
+                    className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs"
+                  >
+                    <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
+                      <span className="w-6 h-6 rounded-lg bg-teal-100 text-teal-950 font-bold flex items-center justify-center text-[11px] shrink-0 mt-0.5 sm:mt-0 tabular-nums">
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="font-bold text-slate-800 block break-words leading-snug">{s.name}</span>
+                      </div>
+                    </div>
+                    <div className="text-left font-black text-teal-900 tabular-nums">
+                      {s.currentPoints} نقطة
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1089,6 +1378,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
           onClose={() => setShowNominationModal(false)}
           students={allCircleStudents}
           circle={selectedCircle}
+          circles={activeTeacherCircles}
         />
       )}
     </div>

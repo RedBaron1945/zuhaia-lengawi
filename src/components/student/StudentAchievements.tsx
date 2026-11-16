@@ -1,7 +1,7 @@
 import React from 'react';
 import { repository } from '../../services/storageService';
 import { Student } from '../../types';
-import { Award, Lock, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Award, Lock, CheckCircle2 } from 'lucide-react';
 
 interface StudentAchievementsProps {
   student: Student;

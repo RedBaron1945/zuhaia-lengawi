@@ -268,7 +268,7 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
                       <a
                         href={`https://wa.me/966${(student.guardianPhone || student.parentPhone)!.replace(/^0/, '')}`}
                         target="_blank"
-                        rel="noreferrer"
+                        rel="noopener noreferrer"
                         className="px-1.5 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold"
                         title="واتساب"
                       >

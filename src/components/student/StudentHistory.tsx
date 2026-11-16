@@ -1,21 +1,16 @@
 import React, { useState } from 'react';
-import { PointTransaction, RedemptionRequest } from '../../types';
+import { RedemptionRequest } from '../../types';
 import { repository } from '../../services/storageService';
 import {
   Clock,
   Gift,
-  CheckCircle2,
-  Clock3,
-  XCircle,
-  PackageCheck,
   ChevronDown,
   ChevronUp,
   Sparkles,
-  X,
 } from 'lucide-react';
-import { formatHijriDate } from '../../utils/dateUtils';
 import { groupTransactionsByDay, DailyPointsGroup } from '../../utils/pointUtils';
 import { ConfirmationModal } from '../common/ConfirmationModal';
+import { RedemptionStatusTracker } from './RedemptionStatusTracker';
 import { useToast } from '../../context/ToastContext';
 
 interface StudentHistoryProps {
@@ -39,39 +34,6 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
       ...prev,
       [dateKey]: !prev[dateKey],
     }));
-  };
-
-  const getStatusBadge = (status: RedemptionRequest['status']) => {
-    switch (status) {
-      case 'pending':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-            <Clock3 className="w-3.5 h-3.5 text-amber-600" />
-            قيد المراجعة
-          </span>
-        );
-      case 'approved':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-50 text-teal-800 border border-teal-200">
-            <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-            تمت الموافقة
-          </span>
-        );
-      case 'delivered':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
-            <PackageCheck className="w-3.5 h-3.5 text-emerald-600" />
-            تم التسليم
-          </span>
-        );
-      case 'rejected':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-800 border border-rose-200">
-            <XCircle className="w-3.5 h-3.5 text-rose-600" />
-            مرفوض
-          </span>
-        );
-    }
   };
 
   // Helper colors and formatters
@@ -418,56 +380,18 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
           )}
         </div>
       ) : (
-        <div className="space-y-2.5">
+        <div className="space-y-3">
           {redemptionRequests.length === 0 ? (
             <div className="p-8 text-center bg-white rounded-2xl border border-slate-200 text-slate-500">
               لم تقم بطلب أي مكافأة بعد. استكشف قسم المكافآت واستبدل نقاطك! 🎁
             </div>
           ) : (
             redemptionRequests.map((req) => (
-              <div
+              <RedemptionStatusTracker
                 key={req.id}
-                className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-col gap-2 hover:border-amber-200 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-2xl shrink-0">
-                      <span>{req.rewardEmoji}</span>
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-900">{req.rewardTitle}</h4>
-                      <p className="text-xs font-semibold text-teal-800 mt-0.5 tabular-nums">
-                        {req.rewardCost} نقطة
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {getStatusBadge(req.status)}
-                    <button
-                      onClick={() => setDeleteConfirmReq(req)}
-                      title="حذف المطالبة من السجل"
-                      aria-label="حذف المطالبة"
-                      className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition-all cursor-pointer border border-transparent hover:border-rose-100"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
-                  <span className="tabular-nums">
-                    تاريخ الطلب: {formatHijriDate(new Date(req.requestDate))}
-                  </span>
-                  {req.handledBy && <span>المشرف: {req.handledBy}</span>}
-                </div>
-
-                {req.rejectionReason && (
-                  <div className="text-xs bg-rose-50 text-rose-700 p-2.5 rounded-xl border border-rose-100">
-                    سبب الرفض: {req.rejectionReason}
-                    {req.refunded && ' (تمت إعادة النقاط إلى رصيدك)'}
-                  </div>
-                )}
-              </div>
+                request={req}
+                onDelete={(item) => setDeleteConfirmReq(item)}
+              />
             ))
           )}
         </div>

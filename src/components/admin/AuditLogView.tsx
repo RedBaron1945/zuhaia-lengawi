@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { AuditLog } from '../../types';
-import { ShieldCheck, Clock, Search, Filter, Trash2, X } from 'lucide-react';
+import { Search, Trash2, X, RefreshCw } from 'lucide-react';
 import { formatHijriDateTime } from '../../utils/dateUtils';
 import { ConfirmationModal } from '../common/ConfirmationModal';
 import { useToast } from '../../context/ToastContext';
@@ -11,15 +11,24 @@ export const AuditLogView: React.FC = () => {
   const [search, setSearch] = useState('');
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [deleteTargetLog, setDeleteTargetLog] = useState<AuditLog | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [, setTick] = useState(0);
   const { showToast } = useToast();
 
   useEffect(() => {
+    void repository.refreshAuditLogs(false);
     const unsub = subscribeToDataChanges(() => {
       setTick((t) => t + 1);
     });
     return unsub;
   }, []);
+
+  const handleManualRefresh = async () => {
+    setRefreshing(true);
+    await repository.refreshAuditLogs(true);
+    setTick((t) => t + 1);
+    setRefreshing(false);
+  };
 
   const logs = repository.getAuditLogs();
 
@@ -61,6 +70,7 @@ export const AuditLogView: React.FC = () => {
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value)}
+          aria-label="تصفية حسب نوع النشاط"
           className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
         >
           <option value="all">كل الأنشطة</option>
@@ -70,6 +80,17 @@ export const AuditLogView: React.FC = () => {
           <option value="redemption">الاستردادات</option>
           <option value="settings">الإعدادات</option>
         </select>
+
+        <button
+          type="button"
+          onClick={() => void handleManualRefresh()}
+          disabled={refreshing}
+          className="px-3 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer min-h-[40px] shrink-0"
+          title="تحديث السجل من قاعدة البيانات"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+          <span>تحديث</span>
+        </button>
 
         {/* Clear All Logs Button */}
         {logs.length > 0 && (

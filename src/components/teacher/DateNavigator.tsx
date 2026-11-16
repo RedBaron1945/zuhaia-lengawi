@@ -12,6 +12,7 @@ import {
   getPreviousCircleDate,
   getNextCircleDate,
   getSundayOfWeek,
+  getCircleDaysOfWeek,
   shiftMonth,
   formatGregorianArabicDate,
 } from '../../utils/dateUtils';
@@ -22,6 +23,7 @@ interface DateNavigatorProps {
   weekDays: WeekDayInfo[];
   onSelectDate: (date: string) => void;
   onWeekChange: (newWeekStart: Date) => void;
+  onResetToToday?: () => void;
   dayEvaluationCounts?: Record<string, { recorded: number; total: number }>;
 }
 
@@ -29,6 +31,7 @@ export const DateNavigator: React.FC<DateNavigatorProps> = ({
   selectedDate,
   onSelectDate,
   onWeekChange,
+  onResetToToday,
   dayEvaluationCounts = {},
 }) => {
   const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
@@ -48,17 +51,37 @@ export const DateNavigator: React.FC<DateNavigatorProps> = ({
   const hijriSmallLine = `${hijriParts.day} ${hijriParts.month} ${hijriParts.year} هـ`; // e.g., "٧ جمادى الأولى 1448 هـ"
 
   // Status info for selected date
+  const now = new Date();
+  const todayISO = formatISODate(now);
+  const isSelectedToday = selectedDate === todayISO;
+  const todayCircleTarget = (() => {
+    if (now.getDay() <= 3) return todayISO;
+    const days = getCircleDaysOfWeek(getSundayOfWeek(now));
+    return days[days.length - 1]?.date || todayISO;
+  })();
+  const showTodayButton = selectedDate !== todayCircleTarget;
   const currentEvalInfo = dayEvaluationCounts[selectedDate] || { recorded: 0, total: 0 };
   const { recorded, total } = currentEvalInfo;
 
-  let statusText = 'لم تُرصد بعد';
+  const studentLabel =
+    total === 0
+      ? 'طلاب'
+      : total === 1
+      ? 'طالب'
+      : total === 2
+      ? 'طالبين'
+      : total <= 10
+      ? 'طلاب'
+      : 'طالباً';
+
+  const statusText = isSelectedToday
+    ? `رُصد ${recorded} من ${total} ${studentLabel} اليوم`
+    : `رُصد ${recorded} من ${total} ${studentLabel}`;
   let statusBadgeClass = 'bg-slate-100 text-slate-800 border-slate-300';
 
   if (recorded > 0 && recorded === total && total > 0) {
-    statusText = 'تم الرصد ✓';
     statusBadgeClass = 'bg-emerald-100 text-emerald-950 border-emerald-400';
   } else if (recorded > 0 && recorded < total) {
-    statusText = 'مرصود جزئياً';
     statusBadgeClass = 'bg-amber-100 text-amber-950 border-amber-400';
   }
 
@@ -114,8 +137,8 @@ export const DateNavigator: React.FC<DateNavigatorProps> = ({
 
   return (
     <div className="space-y-2 text-right">
-      {/* Date Row: 40px Arrows + "الأحد 18 أكتوبر" (Single Line) + Hijri Small + Status Badge */}
-      <div className="flex items-center justify-between gap-2 text-center py-1">
+      {/* Date Row: 40px Arrows + "الأحد 18 أكتوبر" (Single Line) + Hijri Small */}
+      <div className="flex items-center justify-between gap-2 text-center pt-0.5">
         {/* Right Arrow (40px) */}
         <button
           type="button"
@@ -127,7 +150,7 @@ export const DateNavigator: React.FC<DateNavigatorProps> = ({
           <ChevronRight className="w-5 h-5 stroke-[2.5]" />
         </button>
 
-        {/* Center Info: Gregorian Single Line + Small Hijri + Status Badge */}
+        {/* Center Info: Gregorian Single Line + Small Hijri */}
         <div className="flex flex-col items-center justify-center text-center min-w-0 flex-1 px-1">
           <span className="text-base font-extrabold text-slate-900 leading-tight whitespace-nowrap truncate w-full text-center">
             {gregorianMainLine}
@@ -135,24 +158,6 @@ export const DateNavigator: React.FC<DateNavigatorProps> = ({
           <span className="text-xs font-semibold text-slate-500 mt-0.5 whitespace-nowrap truncate w-full text-center">
             {hijriSmallLine}
           </span>
-          <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
-            <span
-              className={`px-2.5 py-0.5 rounded-full text-xs font-black border inline-block shadow-2xs ${statusBadgeClass}`}
-            >
-              {statusText}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setViewMonthAnchor(parseISODate(selectedDate));
-                setIsBottomSheetOpen(true);
-              }}
-              className="text-xs font-extrabold text-teal-800 hover:text-teal-950 underline cursor-pointer inline-flex items-center gap-1 transition-colors"
-            >
-              <Calendar className="w-3.5 h-3.5 text-teal-700" />
-              <span>يوم آخر</span>
-            </button>
-          </div>
         </div>
 
         {/* Left Arrow (40px) */}
@@ -165,6 +170,36 @@ export const DateNavigator: React.FC<DateNavigatorProps> = ({
         >
           <ChevronLeft className="w-5 h-5 stroke-[2.5]" />
         </button>
+      </div>
+
+      {/* Status & Quick Actions Row (Full Width so it fits 360px cleanly) */}
+      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+        <span
+          className={`px-2.5 py-1 rounded-full text-xs font-black border inline-block shadow-2xs tabular-nums ${statusBadgeClass}`}
+        >
+          {statusText}
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setViewMonthAnchor(parseISODate(selectedDate));
+            setIsBottomSheetOpen(true);
+          }}
+          className="text-xs font-extrabold text-teal-800 hover:text-teal-950 underline cursor-pointer inline-flex items-center gap-1 transition-colors min-h-[40px] px-1.5"
+        >
+          <Calendar className="w-3.5 h-3.5 text-teal-700" />
+          <span>يوم آخر</span>
+        </button>
+        {showTodayButton && onResetToToday && (
+          <button
+            type="button"
+            onClick={onResetToToday}
+            className="px-2.5 py-1 rounded-xl text-xs font-extrabold text-amber-900 bg-amber-50/90 hover:bg-amber-100 border border-amber-200/90 cursor-pointer inline-flex items-center justify-center transition-colors min-h-[40px] shrink-0 active:scale-95"
+            title="العودة إلى اليوم"
+          >
+            <span>اليوم</span>
+          </button>
+        )}
       </div>
 
       {/* Monthly Calendar Bottom Sheet */}

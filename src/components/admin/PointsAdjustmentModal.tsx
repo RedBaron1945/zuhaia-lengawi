@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { Student, User } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
-import { X, Award, Plus, Minus, AlertCircle } from 'lucide-react';
+import { ConfirmationModal } from '../common/ConfirmationModal';
+import { X, Plus, Minus, AlertCircle } from 'lucide-react';
 
 interface PointsAdjustmentModalProps {
   isOpen: boolean;
@@ -23,6 +24,10 @@ export const PointsAdjustmentModal: React.FC<PointsAdjustmentModalProps> = ({
   const [amount, setAmount] = useState<number>(50);
   const [reason, setReason] = useState<string>('مكافأة إدارية لتفوق متميز');
   const [customReason, setCustomReason] = useState<string>('');
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    finalAmount: number;
+    finalReason: string;
+  } | null>(null);
   const { showToast, celebratePoints } = useToast();
 
   if (!isOpen) return null;
@@ -35,7 +40,7 @@ export const PointsAdjustmentModal: React.FC<PointsAdjustmentModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const finalReason = customReason.trim() ? customReason.trim() : reason;
+    const finalReason = reason === 'custom' ? customReason.trim() : reason.trim();
     if (!finalReason) {
       showToast('يجب إدخال سبب التعديل الإداري (إلزامي للرقابة والتوثيق).', 'error');
       return;
@@ -47,23 +52,36 @@ export const PointsAdjustmentModal: React.FC<PointsAdjustmentModalProps> = ({
     }
 
     const finalAmount = actionType === 'add' ? amount : -amount;
+    if (finalAmount < 0 && student.currentPoints + finalAmount < 0) {
+      showToast(`رصيد الطالب لا يكفي (${student.currentPoints} نقطة متاحة فقط).`, 'error');
+      return;
+    }
 
-    // Requirement 20: IT cannot edit the final balance directly.
-    // It creates an atomic PointTransaction with actor and mandatory reason!
+    setPendingConfirm({ finalAmount, finalReason });
+  };
+
+  const handleConfirmExecute = () => {
+    if (!pendingConfirm) return;
+    const { finalAmount, finalReason } = pendingConfirm;
+
+    // Requirement 20 + 10: IT cannot edit the final balance directly.
+    // Confirmed atomic PointTransaction with actor, mandatory reason, and AuditLog entry.
     const result = repository.addPointTransaction({
       studentId: student.id,
       amount: finalAmount,
-      type: actionType === 'add' ? 'admin_bonus' : 'admin_correction',
+      type: finalAmount >= 0 ? 'admin_bonus' : 'admin_correction',
       reason: finalReason,
       createdBy: adminUser.name,
-      createdByRole: 'admin',
+      createdByRole: adminUser.role || 'admin',
     });
 
+    setPendingConfirm(null);
+
     if (result.success) {
-      if (actionType === 'add') {
-        celebratePoints(amount, `إضافة إدارية للطالب ${student.name}`);
+      if (finalAmount >= 0) {
+        celebratePoints(Math.abs(finalAmount), `إضافة إدارية للطالب ${student.name}`);
       } else {
-        showToast(`تم خصم ${amount} نقطة بنجاح مع توثيق العملية في السجل الإداري.`, 'info');
+        showToast(`تم خصم ${Math.abs(finalAmount)} نقطة بنجاح مع توثيق العملية في سجل التدقيق.`, 'info');
       }
       onSuccess();
       onClose();
@@ -211,6 +229,20 @@ export const PointsAdjustmentModal: React.FC<PointsAdjustmentModalProps> = ({
           </button>
         </form>
       </div>
+
+      {pendingConfirm && (
+        <ConfirmationModal
+          isOpen={!!pendingConfirm}
+          onClose={() => setPendingConfirm(null)}
+          onConfirm={handleConfirmExecute}
+          title={pendingConfirm.finalAmount >= 0 ? 'تأكيد إضافة نقاط إدارية' : 'تأكيد خصم نقاط إداري'}
+          message={`الطالب: ${student.name}\nالتعديل: ${pendingConfirm.finalAmount >= 0 ? `+${pendingConfirm.finalAmount}` : pendingConfirm.finalAmount} نقطة\nالرصيد بعد التعديل: ${Math.max(0, student.currentPoints + pendingConfirm.finalAmount)} نقطة\nالسبب: ${pendingConfirm.finalReason}\n\nسيتم توثيق هذه العملية في سجل التدقيق باسم (${adminUser.name}).`}
+          confirmText="تأكيد وتسجيل في السجل"
+          cancelText="مراجعة"
+          type={pendingConfirm.finalAmount >= 0 ? 'primary' : 'danger'}
+          zIndexClass="z-[70]"
+        />
+      )}
     </div>
   );
 };

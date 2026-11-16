@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
@@ -16,7 +16,6 @@ import {
   Calendar,
   Phone,
   Users,
-  ShieldCheck,
   AlertCircle,
   LogOut,
 } from 'lucide-react';
@@ -63,7 +62,6 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
   const [addressDistrict, setAddressDistrict] = useState(initialAddr.district);
   const [addressStreet, setAddressStreet] = useState(initialAddr.street);
   const [guardianName, setGuardianName] = useState(student.guardianName || '');
-  const STANDARD_RELATIONS = useMemo(() => ['أب', 'أم', 'أخ', 'عم'], []);
   const [selectedRelationType, setSelectedRelationType] = useState<string>(() => {
     if (!student.guardianRelation) return '';
     return ['أب', 'أم', 'أخ', 'عم'].includes(student.guardianRelation)
@@ -84,6 +82,13 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
 
   // Automatic Age Calculation from birthDate
   const computedAge = useMemo(() => calculateAge(birthDate), [birthDate]);
+  const customRelationInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (selectedRelationType === 'أخرى') {
+      customRelationInputRef.current?.focus();
+    }
+  }, [selectedRelationType]);
 
   if (!isOpen) return null;
 
@@ -593,9 +598,9 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
                   {selectedRelationType === 'أخرى' && (
                     <div className="animate-fade-in mt-1.5">
                       <input
+                        ref={customRelationInputRef}
                         type="text"
                         required
-                        autoFocus
                         value={customRelation}
                         onChange={(e) => setCustomRelation(e.target.value)}
                         placeholder="اكتب صلة القرابة هنا (مثال: خال، جد، ولي أمر...)"

@@ -1,9 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Student, Circle, User } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import { PointsAdjustmentModal } from './PointsAdjustmentModal';
-import { ConfirmationModal } from '../common/ConfirmationModal';
 import { calculateAge } from '../../utils/dateUtils';
 import {
   Users,
@@ -13,31 +12,82 @@ import {
   Power,
   Search,
   Award,
-  CheckCircle,
   X,
   Eye,
   CreditCard,
   GraduationCap,
-  MapPin,
-  Calendar,
-  Phone,
-  ShieldCheck,
   Check,
+  MoreVertical,
   AlertCircle,
-  PhoneCall,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  ChevronRight,
+  ChevronLeft,
+  LifeBuoy,
 } from 'lucide-react';
+
+export interface PendingTicketStudentAction {
+  ticketId: string;
+  type: 'add' | 'delete';
+  studentName: string;
+}
 
 interface StudentsManagementProps {
   adminUser: User;
   onUpdate: () => void;
+  pendingTicketAction?: PendingTicketStudentAction | null;
+  onTicketActionComplete?: (ticketId: string) => void;
+  onCancelTicketAction?: () => void;
 }
 
-export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUser, onUpdate }) => {
+type SortKey = 'name' | 'circle' | 'points' | 'status';
+type SortDir = 'asc' | 'desc';
+
+const PAGE_SIZE = 25;
+
+const hasMissingStudentData = (s: Student): boolean => {
+  const hasGuardianPhone = Boolean((s.guardianPhone || s.parentPhone || '').trim());
+  const hasNationalId = Boolean((s.nationalId || '').trim());
+  return !s.profileCompleted || !hasGuardianPhone || !hasNationalId;
+};
+
+const normalizeArabicText = (text: string): string =>
+  text
+    .trim()
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+export const StudentsManagement: React.FC<StudentsManagementProps> = ({
+  adminUser,
+  onUpdate,
+  pendingTicketAction,
+  onTicketActionComplete,
+  onCancelTicketAction,
+}) => {
   const [students, setStudents] = useState<Student[]>(() => repository.getStudents());
   const [circles, setCircles] = useState<Circle[]>(() => repository.getCircles());
   const [search, setSearch] = useState('');
   const [circleFilter, setCircleFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [dataFilter, setDataFilter] = useState<'all' | 'incomplete' | 'complete'>('all');
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Active ticket execution tracking
+  const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
+
+  // Overflow ⋮ dropdown menu state
+  const [menuAnchor, setMenuAnchor] = useState<{
+    student: Student;
+    top: number;
+    left: number;
+  } | null>(null);
+  const menuPopoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const unsub = subscribeToDataChanges(() => {
@@ -53,6 +103,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [pointsAdjustStudent, setPointsAdjustStudent] = useState<Student | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<Student | null>(null);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
 
   // Form State for all 12 fields
   const [formName, setFormName] = useState('');
@@ -65,7 +116,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
   const [formBirthPlace, setFormBirthPlace] = useState('');
   const [formSchoolName, setFormSchoolName] = useState('');
   const [formEducationalLevel, setFormEducationalLevel] = useState('');
-  
+
   const parseAddress = (addr?: string) => {
     if (!addr) return { city: '', district: '', street: '' };
     const parts = addr.split(/\s*[-–—]\s*/);
@@ -90,11 +141,69 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
   // Computed Age in Edit Form
   const formComputedAge = useMemo(() => calculateAge(formBirthDate), [formBirthDate]);
 
-  const handleOpenAdd = () => {
-    setFormName('');
-    setFormFullNameQuad('');
+  const circleNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    circles.forEach((c) => map.set(c.id, c.name));
+    return map;
+  }, [circles]);
+
+  const teacherFilterOptions = useMemo(() => {
+    const byTeacherKey = new Map<
+      string,
+      { key: string; teacherName: string; circleIds: Set<string> }
+    >();
+    circles.forEach((c) => {
+      const teacherName = (c.teacherName || '').trim() || c.name;
+      const key = (c.teacherId || teacherName).trim();
+      const existing = byTeacherKey.get(key);
+      if (existing) {
+        existing.circleIds.add(c.id);
+      } else {
+        byTeacherKey.set(key, {
+          key,
+          teacherName,
+          circleIds: new Set([c.id]),
+        });
+      }
+    });
+    return Array.from(byTeacherKey.values());
+  }, [circles]);
+
+  const selectedFilterCircleIds = useMemo(() => {
+    if (circleFilter === 'all') return null;
+    const match = teacherFilterOptions.find((opt) => opt.key === circleFilter);
+    return match ? match.circleIds : null;
+  }, [circleFilter, teacherFilterOptions]);
+
+  // Close ⋮ menu on outside click, escape, or scroll
+  useEffect(() => {
+    if (!menuAnchor) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (menuPopoverRef.current && !menuPopoverRef.current.contains(e.target as Node)) {
+        setMenuAnchor(null);
+      }
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuAnchor(null);
+    };
+    const handleScroll = () => setMenuAnchor(null);
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKey);
+    window.addEventListener('scroll', handleScroll, true);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKey);
+      window.removeEventListener('scroll', handleScroll, true);
+    };
+  }, [menuAnchor]);
+
+  const resetForm = useCallback((prefillName = '') => {
+    const defaultCircleId = repository.getCircles()[0]?.id || 'circle_1';
+    setFormName(prefillName);
+    setFormFullNameQuad(prefillName);
     setFormEmail('');
-    setFormCircleId(circles[0]?.id || 'circle_1');
+    setFormCircleId(defaultCircleId);
     setFormNationalId('');
     setFormNationality('');
     setFormBirthDate('');
@@ -109,6 +218,58 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
     setFormGuardianPhone('');
     setFormPhone('');
     setFormProfileCompleted(false);
+  }, []);
+
+  // Handle incoming "تنفيذ" action from SupportTicketsManager
+  useEffect(() => {
+    if (!pendingTicketAction) return;
+    setActiveTicketId(pendingTicketAction.ticketId);
+
+    if (pendingTicketAction.type === 'add') {
+      setEditingStudent(null);
+      resetForm(pendingTicketAction.studentName);
+      setIsAddModalOpen(true);
+    } else if (pendingTicketAction.type === 'delete') {
+      const targetNorm = normalizeArabicText(pendingTicketAction.studentName);
+      setSearch(pendingTicketAction.studentName);
+      setCurrentPage(1);
+
+      const allStudents = repository.getStudents();
+      const exactMatches = allStudents.filter(
+        (s) =>
+          normalizeArabicText(s.name) === targetNorm ||
+          normalizeArabicText(s.fullNameQuad || '') === targetNorm
+      );
+      const partialMatches =
+        exactMatches.length > 0
+          ? exactMatches
+          : allStudents.filter((s) => {
+              const n1 = normalizeArabicText(s.name);
+              const n2 = normalizeArabicText(s.fullNameQuad || '');
+              return (
+                (targetNorm && (n1.includes(targetNorm) || n2.includes(targetNorm))) ||
+                (n1 && targetNorm.includes(n1))
+              );
+            });
+
+      if (partialMatches.length === 1) {
+        setDeleteConfirmInput('');
+        setDeleteCandidate(partialMatches[0]);
+      } else if (partialMatches.length > 1) {
+        showToast('وُجد أكثر من طالب مطابق للاسم، اختر الطالب المطلوب حذفه من القائمة.', 'info');
+      } else {
+        setSearch('');
+        showToast(
+          `لم يتم العثور تلقائياً على الطالب "${pendingTicketAction.studentName}"؛ ابحث عنه يدوياً لتنفيذ الحذف.`,
+          'info'
+        );
+      }
+    }
+  }, [pendingTicketAction, resetForm, showToast]);
+
+  const handleOpenAdd = () => {
+    setActiveTicketId(null);
+    resetForm('');
     setIsAddModalOpen(true);
   };
 
@@ -151,7 +312,6 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
       .join(' - ');
 
     if (editingStudent) {
-      // Edit
       const updated: Student = {
         ...editingStudent,
         name: formName.trim(),
@@ -177,7 +337,6 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
       showToast(res.message, 'success');
       setEditingStudent(null);
     } else {
-      // Add
       const newStudent: Student = {
         id: `student_${Date.now().toString(36)}`,
         name: formName.trim(),
@@ -210,6 +369,11 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
       const res = repository.saveStudent(newStudent, adminUser);
       showToast(res.message, 'success');
       setIsAddModalOpen(false);
+
+      if (activeTicketId) {
+        onTicketActionComplete?.(activeTicketId);
+        setActiveTicketId(null);
+      }
     }
 
     setStudents(repository.getStudents());
@@ -223,186 +387,545 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
     onUpdate();
   };
 
-  const handleConfirmDelete = () => {
+  const openDeleteDialog = (student: Student) => {
+    setDeleteConfirmInput('');
+    setDeleteCandidate(student);
+  };
+
+  const handleConfirmDelete = (e: React.FormEvent) => {
+    e.preventDefault();
     if (!deleteCandidate) return;
+    if (deleteConfirmInput.trim() !== deleteCandidate.name.trim()) {
+      showToast('يجب كتابة اسم الطالب مطابقاً لتأكيد الحذف النهائي.', 'error');
+      return;
+    }
+
     const res = repository.deleteStudent(deleteCandidate.id, adminUser);
     showToast(res.message, 'info');
     setDeleteCandidate(null);
+    setDeleteConfirmInput('');
     setStudents(repository.getStudents());
     onUpdate();
+
+    if (activeTicketId) {
+      onTicketActionComplete?.(activeTicketId);
+      setActiveTicketId(null);
+    }
   };
 
-  const filteredStudents = students.filter((s) => {
-    if (statusFilter === 'active' && !s.active) return false;
-    if (statusFilter === 'inactive' && s.active) return false;
-    if (circleFilter !== 'all' && s.circleId !== circleFilter) return false;
-    if (search && !s.name.includes(search) && !s.fullNameQuad?.includes(search)) return false;
-    return true;
-  });
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'points' ? 'desc' : 'asc');
+    }
+    setCurrentPage(1);
+  };
+
+  const openRowMenu = (e: React.MouseEvent<HTMLButtonElement>, student: Student) => {
+    e.stopPropagation();
+    if (menuAnchor?.student.id === student.id) {
+      setMenuAnchor(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const menuWidth = 196;
+    const menuHeight = 200;
+    const openUpward = rect.bottom + menuHeight > window.innerHeight - 16;
+    const top = openUpward ? Math.max(12, rect.top - menuHeight - 6) : rect.bottom + 6;
+    const left = Math.max(12, Math.min(rect.left, window.innerWidth - menuWidth - 12));
+    setMenuAnchor({ student, top, left });
+  };
+
+  // Reset page to 1 when filters/search change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, circleFilter, statusFilter, dataFilter]);
+
+  const filteredAndSortedStudents = useMemo(() => {
+    const q = search.trim();
+    const filtered = students.filter((s) => {
+      if (statusFilter === 'active' && !s.active) return false;
+      if (statusFilter === 'inactive' && s.active) return false;
+      if (circleFilter !== 'all') {
+        if (!selectedFilterCircleIds || !selectedFilterCircleIds.has(s.circleId)) return false;
+      }
+      if (dataFilter === 'incomplete' && !hasMissingStudentData(s)) return false;
+      if (dataFilter === 'complete' && hasMissingStudentData(s)) return false;
+      if (q) {
+        const matchName = s.name.includes(q);
+        const matchQuad = Boolean(s.fullNameQuad && s.fullNameQuad.includes(q));
+        const matchId = Boolean(s.nationalId && s.nationalId.includes(q));
+        if (!matchName && !matchQuad && !matchId) return false;
+      }
+      return true;
+    });
+
+    if (!sortKey) return filtered;
+
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === 'name') {
+        cmp = a.name.localeCompare(b.name, 'ar');
+      } else if (sortKey === 'circle') {
+        const cA = circleNameMap.get(a.circleId) || '';
+        const cB = circleNameMap.get(b.circleId) || '';
+        cmp = cA.localeCompare(cB, 'ar');
+      } else if (sortKey === 'points') {
+        cmp = a.currentPoints - b.currentPoints;
+      } else if (sortKey === 'status') {
+        cmp = Number(b.active) - Number(a.active);
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [students, statusFilter, circleFilter, selectedFilterCircleIds, dataFilter, search, sortKey, sortDir, circleNameMap]);
+
+  const totalCount = filteredAndSortedStudents.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * PAGE_SIZE;
+  const paginatedStudents = filteredAndSortedStudents.slice(startIndex, startIndex + PAGE_SIZE);
+  const rangeStart = totalCount === 0 ? 0 : startIndex + 1;
+  const rangeEnd = Math.min(startIndex + PAGE_SIZE, totalCount);
+
+  const renderSortIcon = (key: SortKey) => {
+    if (sortKey !== key) return <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />;
+    return sortDir === 'asc' ? (
+      <ArrowUp className="w-3.5 h-3.5 text-indigo-700" />
+    ) : (
+      <ArrowDown className="w-3.5 h-3.5 text-indigo-700" />
+    );
+  };
 
   return (
     <div className="space-y-3">
-      {/* Top action row */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-1 flex-wrap sm:flex-nowrap">
-          <div className="relative flex-1 min-w-[180px]">
+      {/* Pending Support Ticket Action Banner */}
+      {activeTicketId && (
+        <div className="rounded-xl bg-indigo-50 border border-indigo-200 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2 text-indigo-950 font-bold">
+            <LifeBuoy className="w-4 h-4 text-indigo-700 shrink-0" />
+            <span>
+              وضع تنفيذ تذكرة دعم: سيتم إغلاق التذكرة تلقائياً فور إتمام الإجراء
+              {pendingTicketAction?.studentName ? ` (${pendingTicketAction.studentName})` : ''}.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTicketId(null);
+              onCancelTicketAction?.();
+            }}
+            className="text-indigo-700 hover:text-indigo-950 font-bold shrink-0 cursor-pointer"
+          >
+            إلغاء الربط
+          </button>
+        </div>
+      )}
+
+      {/* Top action & filter row */}
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2">
+        <div className="flex items-center gap-2 flex-1 flex-wrap">
+          <div className="relative flex-1 min-w-[200px]">
             <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="بحث باسم الطالب أو الاسم الرباعي..."
+              placeholder="بحث باسم الطالب أو الاسم الرباعي أو الهوية..."
               className="w-full pr-9 pl-3 py-2 text-xs rounded-xl bg-white border border-slate-200 focus:outline-hidden focus:border-indigo-600 min-h-[40px]"
             />
           </div>
           <select
             value={circleFilter}
             onChange={(e) => setCircleFilter(e.target.value)}
+            aria-label="تصفية حسب المعلم"
             className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
           >
             <option value="all">كل الحلقات</option>
-            {circles.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
+            {teacherFilterOptions.map((opt) => (
+              <option key={opt.key} value={opt.key}>
+                {opt.teacherName}
               </option>
             ))}
           </select>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
+            aria-label="تصفية حسب الحالة"
             className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
           >
             <option value="all">كل الحالات</option>
             <option value="active">النشطين فقط</option>
             <option value="inactive">المعطلين فقط</option>
           </select>
+          <select
+            value={dataFilter}
+            onChange={(e) => setDataFilter(e.target.value as any)}
+            aria-label="تصفية حسب اكتمال البيانات"
+            className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
+          >
+            <option value="all">اكتمال البيانات: الكل</option>
+            <option value="incomplete">بيانات ناقصة فقط</option>
+            <option value="complete">بيانات مكتملة فقط</option>
+          </select>
         </div>
 
         <button
+          type="button"
           onClick={handleOpenAdd}
-          className="min-h-[40px] px-3.5 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+          className="min-h-[40px] px-3.5 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer shrink-0"
         >
           <Plus className="w-4 h-4" />
           <span>إضافة طالب جديد</span>
         </button>
       </div>
 
-      {/* Students List */}
-      <div className="space-y-2.5">
-        {filteredStudents.map((student) => {
-          const circleName = circles.find((c) => c.id === student.circleId)?.name;
+      {/* Results Counter */}
+      <div className="flex items-center justify-between gap-2 text-xs text-slate-600 px-0.5">
+        <span className="font-bold tabular-nums">
+          عرض {rangeStart}–{rangeEnd} من أصل {totalCount} طالب
+          {totalCount !== students.length ? ` (إجمالي المسجلين: ${students.length})` : ''}
+        </span>
+        {(search || circleFilter !== 'all' || statusFilter !== 'all' || dataFilter !== 'all') && (
+          <button
+            type="button"
+            onClick={() => {
+              setSearch('');
+              setCircleFilter('all');
+              setStatusFilter('all');
+              setDataFilter('all');
+            }}
+            className="text-indigo-700 hover:text-indigo-950 font-bold cursor-pointer"
+          >
+            إعادة ضبط الفلاتر
+          </button>
+        )}
+      </div>
 
-          return (
-            <div
-              key={student.id}
-              className={`bg-white rounded-2xl p-4 border transition-all flex flex-col gap-2.5 shadow-xs ${
-                student.active ? 'border-slate-200' : 'border-slate-200 bg-slate-50/70 opacity-70'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-900 font-extrabold flex items-center justify-center text-sm shrink-0">
-                    {student.name.charAt(0)}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h4 className="text-sm font-extrabold text-slate-900">{student.name}</h4>
-                      {/* Profile completion badge */}
-                      {student.profileCompleted ? (
-                        <span className="text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
-                          <Check className="w-3 h-3 text-emerald-600" />
-                          <span>بيانات مكتملة</span>
+      {/* Empty State */}
+      {totalCount === 0 ? (
+        <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-500 text-xs space-y-2">
+          <p className="font-bold text-slate-700">لا يوجد طلاب يطابقون معايير البحث أو التصفية.</p>
+        </div>
+      ) : (
+        <>
+          {/* Desktop Table (52px row height, sortable headers) */}
+          <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <table className="w-full text-right border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-extrabold text-slate-600">
+                  <th className="py-2.5 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleSort('name')}
+                      className="inline-flex items-center gap-1.5 hover:text-slate-900 cursor-pointer"
+                    >
+                      <span>الطالب</span>
+                      {renderSortIcon('name')}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3">
+                    <button
+                      type="button"
+                      onClick={() => handleSort('circle')}
+                      className="inline-flex items-center gap-1.5 hover:text-slate-900 cursor-pointer"
+                    >
+                      <span>الحلقة</span>
+                      {renderSortIcon('circle')}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3">
+                    <button
+                      type="button"
+                      onClick={() => handleSort('points')}
+                      className="inline-flex items-center gap-1.5 hover:text-slate-900 cursor-pointer"
+                    >
+                      <span>النقاط</span>
+                      {renderSortIcon('points')}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3">
+                    <button
+                      type="button"
+                      onClick={() => handleSort('status')}
+                      className="inline-flex items-center gap-1.5 hover:text-slate-900 cursor-pointer"
+                    >
+                      <span>الحالة</span>
+                      {renderSortIcon('status')}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-2 w-12 text-center">
+                    <span className="sr-only">الإجراءات</span>
+                    <MoreVertical className="w-4 h-4 text-slate-400 inline-block" aria-hidden="true" />
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {paginatedStudents.map((student) => {
+                  const circleName = circleNameMap.get(student.circleId) || '—';
+                  const incomplete = hasMissingStudentData(student);
+                  const isZero = student.currentPoints === 0;
+
+                  return (
+                    <tr
+                      key={student.id}
+                      onClick={() => setInspectingStudent(student)}
+                      className={`h-[52px] hover:bg-slate-50/90 transition-colors cursor-pointer ${
+                        !student.active ? 'bg-slate-50/60 opacity-75' : ''
+                      }`}
+                    >
+                      {/* الطالب */}
+                      <td className="px-4 py-1.5 max-w-[260px]">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 font-extrabold flex items-center justify-center text-xs shrink-0">
+                            {student.name.charAt(0)}
+                          </div>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-extrabold text-slate-900 truncate">
+                              {student.name}
+                            </span>
+                            {incomplete && (
+                              <span
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 shrink-0"
+                                title="بيانات الطالب ناقصة"
+                              >
+                                <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                <span>بيانات ناقصة</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* الحلقة */}
+                      <td className="px-3 py-1.5 text-slate-600 font-medium whitespace-nowrap">
+                        {circleName}
+                      </td>
+
+                      {/* النقاط */}
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-black tabular-nums border ${
+                            isZero
+                              ? 'text-slate-500 bg-slate-100 border-slate-200'
+                              : 'text-teal-800 bg-teal-50 border-teal-200'
+                          }`}
+                        >
+                          {student.currentPoints} نقطة
                         </span>
-                      ) : (
-                        <span className="text-[10px] bg-slate-100 text-slate-500 border border-slate-200 font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
-                          <span>فارغة</span>
+                      </td>
+
+                      {/* الحالة */}
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center gap-1.5 text-xs font-bold ${
+                            student.active ? 'text-emerald-700' : 'text-slate-500'
+                          }`}
+                        >
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              student.active ? 'bg-emerald-500' : 'bg-slate-400'
+                            }`}
+                          />
+                          <span>{student.active ? 'نشط' : 'معطل'}</span>
+                        </span>
+                      </td>
+
+                      {/* ⋮ Menu */}
+                      <td className="px-2 py-1.5 text-center">
+                        <button
+                          type="button"
+                          onClick={(e) => openRowMenu(e, student)}
+                          aria-label={`إجراءات ${student.name}`}
+                          aria-expanded={menuAnchor?.student.id === student.id}
+                          className="w-9 h-9 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 inline-flex items-center justify-center transition-colors cursor-pointer"
+                        >
+                          <MoreVertical className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile 2-Line Compact Cards */}
+          <div className="md:hidden space-y-2">
+            {paginatedStudents.map((student) => {
+              const circleName = circleNameMap.get(student.circleId) || '—';
+              const guardianPhone = (student.guardianPhone || student.parentPhone || '').trim();
+              const incomplete = hasMissingStudentData(student);
+              const isZero = student.currentPoints === 0;
+
+              return (
+                <div
+                  key={student.id}
+                  onClick={() => setInspectingStudent(student)}
+                  className={`bg-white rounded-xl px-3.5 py-2.5 border border-slate-200 shadow-2xs cursor-pointer active:bg-slate-50 transition-colors ${
+                    !student.active ? 'bg-slate-50/70 opacity-75' : ''
+                  }`}
+                >
+                  {/* Line 1: Name (+ missing data / inactive) + Points + ⋮ */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-extrabold text-slate-900 truncate">
+                        {student.name}
+                      </span>
+                      {incomplete && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-amber-700 shrink-0"
+                          title="بيانات ناقصة"
+                        >
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                          <span>بيانات ناقصة</span>
                         </span>
                       )}
                       {!student.active && (
-                        <span className="text-[10px] bg-slate-200 text-slate-700 font-bold px-1.5 py-0.2 rounded-full">
-                          معطل
+                        <span className="text-[11px] font-bold text-slate-500 shrink-0">
+                          · معطل
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-1 flex-wrap">
-                      <span>{circleName}</span>
-                      <span>·</span>
-                      <span>ولي الأمر: {student.guardianPhone || student.parentPhone || '—'}</span>
-                      {student.nationalId && (
-                        <>
-                          <span>·</span>
-                          <span className="tabular-nums">هوية: {student.nationalId}</span>
-                        </>
-                      )}
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span
+                        className={`text-xs font-black tabular-nums px-2 py-0.5 rounded-lg border ${
+                          isZero
+                            ? 'text-slate-500 bg-slate-100 border-slate-200'
+                            : 'text-teal-800 bg-teal-50 border-teal-200'
+                        }`}
+                      >
+                        {student.currentPoints} ن
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => openRowMenu(e, student)}
+                        aria-label={`إجراءات ${student.name}`}
+                        className="w-9 h-9 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 flex items-center justify-center cursor-pointer"
+                      >
+                        <MoreVertical className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
+
+                  {/* Line 2: Circle (+ Guardian Phone ONLY when present) */}
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5 truncate">
+                    <span>{circleName}</span>
+                    {guardianPhone && (
+                      <>
+                        <span>·</span>
+                        <span className="tabular-nums font-mono" dir="ltr">
+                          {guardianPhone}
+                        </span>
+                      </>
+                    )}
+                  </div>
                 </div>
+              );
+            })}
+          </div>
 
-                <div className="text-left shrink-0">
-                  <span className="text-xs font-black text-teal-800 bg-teal-50 px-2.5 py-1 rounded-xl border border-teal-200 inline-flex items-center gap-1 tabular-nums">
-                    {student.currentPoints} نقطة
-                  </span>
-                </div>
-              </div>
+          {/* Pagination (25 rows/page) */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <button
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 cursor-pointer"
+              >
+                <ChevronRight className="w-4 h-4" />
+                <span>السابق</span>
+              </button>
 
-              {/* Action Buttons Strip */}
-              <div className="flex items-center justify-between pt-2 border-t border-slate-100 gap-1.5 overflow-x-auto text-xs">
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => setPointsAdjustStudent(student)}
-                    className="px-2.5 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold flex items-center gap-1 border border-teal-200 min-h-[36px] cursor-pointer"
-                  >
-                    <Award className="w-3.5 h-3.5 text-teal-700" />
-                    <span>تعديل النقاط (IT)</span>
-                  </button>
+              <span className="text-xs font-bold text-slate-600 tabular-nums">
+                صفحة {safePage} من {totalPages}
+              </span>
 
-                  <button
-                    onClick={() => setInspectingStudent(student)}
-                    className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-900 font-bold flex items-center gap-1 border border-indigo-200 min-h-[36px] cursor-pointer"
-                    title="استعراض كامل بطاقة الطالب"
-                  >
-                    <Eye className="w-3.5 h-3.5 text-indigo-700" />
-                    <span>بطاقة الطالب</span>
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <button
-                    onClick={() => handleOpenEdit(student)}
-                    className="p-1.5 sm:px-2.5 sm:py-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50/70 hover:bg-indigo-100 rounded-lg min-h-[34px] flex items-center gap-1 cursor-pointer transition-colors border border-indigo-100 text-xs font-bold"
-                    title="تعديل بيانات الطالب للدعم الفني"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">تعديل</span>
-                  </button>
-
-                  <button
-                    onClick={() => handleToggleActive(student)}
-                    className={`px-2.5 py-1.5 rounded-lg min-h-[34px] flex items-center gap-1 cursor-pointer transition-all border text-xs font-bold ${
-                      student.active
-                        ? 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200'
-                        : 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
-                    }`}
-                    title={student.active ? 'تعطيل الحساب' : 'تفعيل الحساب'}
-                  >
-                    <Power className="w-3.5 h-3.5" />
-                    <span>{student.active ? 'تعطيل' : 'تفعيل'}</span>
-                  </button>
-
-                  <button
-                    onClick={() => setDeleteCandidate(student)}
-                    className="px-2.5 py-1.5 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg min-h-[34px] flex items-center gap-1 cursor-pointer transition-colors text-xs font-bold"
-                    title="حذف الطالب نهائياً"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>حذف</span>
-                  </button>
-                </div>
-              </div>
+              <button
+                type="button"
+                disabled={safePage >= totalPages}
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 cursor-pointer"
+              >
+                <span>التالي</span>
+                <ChevronLeft className="w-4 h-4" />
+              </button>
             </div>
-          );
-        })}
-      </div>
+          )}
+        </>
+      )}
+
+      {/* Floating ⋮ Action Menu (Fixed Viewport Position to prevent clipping) */}
+      {menuAnchor && (
+        <div
+          ref={menuPopoverRef}
+          role="menu"
+          style={{ top: menuAnchor.top, left: menuAnchor.left }}
+          className="fixed z-50 w-48 bg-white rounded-2xl border border-slate-200 shadow-xl py-1.5 text-right animate-fade-in"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const s = menuAnchor.student;
+              setMenuAnchor(null);
+              handleOpenEdit(s);
+            }}
+            className="w-full px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+          >
+            <Edit2 className="w-3.5 h-3.5 text-indigo-600" />
+            <span>تعديل</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const s = menuAnchor.student;
+              setMenuAnchor(null);
+              setPointsAdjustStudent(s);
+            }}
+            className="w-full px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+          >
+            <Award className="w-3.5 h-3.5 text-teal-700" />
+            <span>تعديل النقاط (IT)</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const s = menuAnchor.student;
+              setMenuAnchor(null);
+              handleToggleActive(s);
+            }}
+            className="w-full px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+          >
+            <Power className={`w-3.5 h-3.5 ${menuAnchor.student.active ? 'text-amber-600' : 'text-emerald-600'}`} />
+            <span>{menuAnchor.student.active ? 'تعطيل الحساب' : 'تفعيل الحساب'}</span>
+          </button>
+
+          <div className="my-1 border-t border-slate-100" />
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const s = menuAnchor.student;
+              setMenuAnchor(null);
+              openDeleteDialog(s);
+            }}
+            className="w-full px-3.5 py-2.5 text-xs font-extrabold text-rose-600 hover:bg-rose-50 flex items-center gap-2 cursor-pointer"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+            <span>حذف</span>
+          </button>
+        </div>
+      )}
 
       {/* Full Student Detail Card Inspection Modal for Technical Support */}
       {inspectingStudent && (
@@ -415,14 +938,18 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                 </div>
                 <div>
                   <h3 className="text-sm font-black text-slate-900">
-                    بطاقة الطالب التفصيلية (الدعم الفني)
+                    بطاقة الطالب: {inspectingStudent.name}
                   </h3>
-                  <p className="text-[11px] text-slate-500">كود الطالب: {inspectingStudent.id}</p>
+                  <p className="text-[11px] text-slate-500 tabular-nums">
+                    {circleNameMap.get(inspectingStudent.circleId) || '—'} · الرصيد: {inspectingStudent.currentPoints} نقطة
+                  </p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setInspectingStudent(null)}
-                className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400"
+                className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 cursor-pointer"
+                aria-label="إغلاق"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -432,14 +959,15 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
               {/* Profile Completion Status */}
               <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
                 <span className="font-bold text-slate-700">حالة تعبئة البيانات:</span>
-                {inspectingStudent.profileCompleted ? (
-                  <span className="text-emerald-700 font-extrabold bg-emerald-50 px-2.5 py-0.5 rounded-lg border border-emerald-200 flex items-center gap-1">
+                {!hasMissingStudentData(inspectingStudent) ? (
+                  <span className="text-emerald-700 font-extrabold inline-flex items-center gap-1">
                     <Check className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>مكتملة ومسجلة رسميًا</span>
+                    <span>مكتملة</span>
                   </span>
                 ) : (
-                  <span className="text-slate-500 font-extrabold bg-slate-100 px-2.5 py-0.5 rounded-lg border border-slate-200 flex items-center gap-1">
-                    <span>فارغة</span>
+                  <span className="text-amber-700 font-extrabold inline-flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                    <span>بيانات ناقصة</span>
                   </span>
                 )}
               </div>
@@ -454,130 +982,166 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                   <div className="flex justify-between py-1 border-b border-slate-100">
                     <span className="text-slate-500 font-medium">اسم الطالب الرباعي:</span>
                     <span className="font-bold text-slate-900">
-                      {inspectingStudent.fullNameQuad || inspectingStudent.name || '—'}
+                      {inspectingStudent.fullNameQuad || inspectingStudent.name}
                     </span>
                   </div>
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">رقم الهوية / الإقامة:</span>
-                    <span className="font-bold text-slate-900 tabular-nums">
-                      {inspectingStudent.nationalId || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">الجنسية:</span>
-                    <span className="font-bold text-slate-900">
-                      {inspectingStudent.nationality || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">تاريخ الميلاد:</span>
-                    <span className="font-bold text-slate-900 tabular-nums">
-                      {inspectingStudent.birthDate || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">العمر:</span>
-                    <span className="font-extrabold text-teal-800 tabular-nums">
-                      {(() => {
-                        const calculated = inspectingStudent.birthDate
-                          ? calculateAge(inspectingStudent.birthDate)
-                          : inspectingStudent.age;
-                        return calculated ? `${calculated} سنة` : '—';
-                      })()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500 font-medium">مكان الميلاد:</span>
-                    <span className="font-bold text-slate-900">
-                      {inspectingStudent.birthPlace || '—'}
-                    </span>
-                  </div>
+                  {inspectingStudent.nationalId && (
+                    <div className="flex justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-500 font-medium">رقم الهوية / الإقامة:</span>
+                      <span className="font-bold text-slate-900 tabular-nums">
+                        {inspectingStudent.nationalId}
+                      </span>
+                    </div>
+                  )}
+                  {inspectingStudent.nationality && (
+                    <div className="flex justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-500 font-medium">الجنسية:</span>
+                      <span className="font-bold text-slate-900">
+                        {inspectingStudent.nationality}
+                      </span>
+                    </div>
+                  )}
+                  {inspectingStudent.birthDate && (
+                    <div className="flex justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-500 font-medium">تاريخ الميلاد:</span>
+                      <span className="font-bold text-slate-900 tabular-nums">
+                        {inspectingStudent.birthDate}
+                      </span>
+                    </div>
+                  )}
+                  {(() => {
+                    const calculated = inspectingStudent.birthDate
+                      ? calculateAge(inspectingStudent.birthDate)
+                      : inspectingStudent.age;
+                    return calculated ? (
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500 font-medium">العمر:</span>
+                        <span className="font-extrabold text-teal-800 tabular-nums">
+                          {calculated} سنة
+                        </span>
+                      </div>
+                    ) : null;
+                  })()}
+                  {inspectingStudent.birthPlace && (
+                    <div className="flex justify-between py-1">
+                      <span className="text-slate-500 font-medium">مكان الميلاد:</span>
+                      <span className="font-bold text-slate-900">
+                        {inspectingStudent.birthPlace}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* 2. البيانات الدراسية والسكن */}
-              <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
-                <h5 className="font-black text-indigo-950 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
-                  <GraduationCap className="w-3.5 h-3.5 text-indigo-700" />
-                  <span>البيانات الدراسية والسكن</span>
-                </h5>
-                <div className="space-y-1.5">
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">المدرسة:</span>
-                    <span className="font-bold text-slate-900">
-                      {inspectingStudent.schoolName || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">المرحلة الدراسية:</span>
-                    <span className="font-bold text-slate-900">
-                      {inspectingStudent.educationalLevel || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500 font-medium">عنوان الطالب:</span>
-                    <span className="font-bold text-slate-900">
-                      {inspectingStudent.address || '—'}
-                    </span>
+              {(inspectingStudent.schoolName || inspectingStudent.educationalLevel || inspectingStudent.address) && (
+                <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <h5 className="font-black text-indigo-950 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
+                    <GraduationCap className="w-3.5 h-3.5 text-indigo-700" />
+                    <span>البيانات الدراسية والسكن</span>
+                  </h5>
+                  <div className="space-y-1.5">
+                    {inspectingStudent.schoolName && (
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500 font-medium">المدرسة:</span>
+                        <span className="font-bold text-slate-900">{inspectingStudent.schoolName}</span>
+                      </div>
+                    )}
+                    {inspectingStudent.educationalLevel && (
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500 font-medium">المرحلة الدراسية:</span>
+                        <span className="font-bold text-slate-900">{inspectingStudent.educationalLevel}</span>
+                      </div>
+                    )}
+                    {inspectingStudent.address && (
+                      <div className="flex justify-between py-1">
+                        <span className="text-slate-500 font-medium">عنوان الطالب:</span>
+                        <span className="font-bold text-slate-900">{inspectingStudent.address}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* 3. بيانات ولي الأمر والتواصل */}
-              <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
-                <h5 className="font-black text-indigo-950 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
-                  <Users className="w-3.5 h-3.5 text-indigo-700" />
-                  <span>بيانات ولي الأمر والتواصل</span>
-                </h5>
-                <div className="space-y-1.5">
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">اسم ولي الأمر:</span>
-                    <span className="font-bold text-slate-900">
-                      {inspectingStudent.guardianName || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">صلة القرابة:</span>
-                    <span className="font-bold text-slate-900">
-                      {inspectingStudent.guardianRelation || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-500 font-medium">جوال ولي الأمر:</span>
-                    <span className="font-extrabold text-teal-900 tabular-nums">
-                      {inspectingStudent.guardianPhone || inspectingStudent.parentPhone || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-slate-500 font-medium">جوال الطالب:</span>
-                    <span className="font-bold text-slate-900 tabular-nums">
-                      {inspectingStudent.phone || '—'}
-                    </span>
+              {(inspectingStudent.guardianName ||
+                inspectingStudent.guardianRelation ||
+                inspectingStudent.guardianPhone ||
+                inspectingStudent.parentPhone ||
+                inspectingStudent.phone) && (
+                <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <h5 className="font-black text-indigo-950 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
+                    <Users className="w-3.5 h-3.5 text-indigo-700" />
+                    <span>بيانات ولي الأمر والتواصل</span>
+                  </h5>
+                  <div className="space-y-1.5">
+                    {inspectingStudent.guardianName && (
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500 font-medium">اسم ولي الأمر:</span>
+                        <span className="font-bold text-slate-900">{inspectingStudent.guardianName}</span>
+                      </div>
+                    )}
+                    {inspectingStudent.guardianRelation && (
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500 font-medium">صلة القرابة:</span>
+                        <span className="font-bold text-slate-900">{inspectingStudent.guardianRelation}</span>
+                      </div>
+                    )}
+                    {(inspectingStudent.guardianPhone || inspectingStudent.parentPhone) && (
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500 font-medium">جوال ولي الأمر:</span>
+                        <span className="font-extrabold text-teal-900 tabular-nums" dir="ltr">
+                          {inspectingStudent.guardianPhone || inspectingStudent.parentPhone}
+                        </span>
+                      </div>
+                    )}
+                    {inspectingStudent.phone && (
+                      <div className="flex justify-between py-1">
+                        <span className="text-slate-500 font-medium">جوال الطالب:</span>
+                        <span className="font-bold text-slate-900 tabular-nums" dir="ltr">
+                          {inspectingStudent.phone}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
+              )}
             </div>
 
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 shrink-0">
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 shrink-0 flex-wrap">
               <button
                 type="button"
                 onClick={() => setInspectingStudent(null)}
-                className="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold"
+                className="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold cursor-pointer"
               >
                 إغلاق
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const s = inspectingStudent;
-                  setInspectingStudent(null);
-                  handleOpenEdit(s);
-                }}
-                className="px-4 py-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Edit2 className="w-3.5 h-3.5" />
-                <span>تعديل بيانات هذا الطالب</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const s = inspectingStudent;
+                    setInspectingStudent(null);
+                    setPointsAdjustStudent(s);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 border border-teal-200 text-teal-800 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Award className="w-3.5 h-3.5" />
+                  <span>تعديل النقاط (IT)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const s = inspectingStudent;
+                    setInspectingStudent(null);
+                    handleOpenEdit(s);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                  <span>تعديل البيانات</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -593,15 +1157,19 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                   {editingStudent ? 'تعديل وتصحيح بيانات الطالب (الدعم الفني)' : 'إضافة طالب جديد'}
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  يمكن لمسؤول الدعم الفني تصحيح أي حقل أو تعديل أي خطأ
+                  {activeTicketId && !editingStudent
+                    ? 'مرتبط بتذكرة دعم: سيتم إغلاق التذكرة تلقائياً بعد الحفظ'
+                    : 'يمكن لمسؤول الدعم الفني تصحيح أي حقل أو تعديل أي خطأ'}
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => {
                   setIsAddModalOpen(false);
                   setEditingStudent(null);
                 }}
                 className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 cursor-pointer"
+                aria-label="إغلاق"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -746,9 +1314,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    عنوان الطالب
-                  </label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">عنوان الطالب</label>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-100/70 p-2 rounded-xl border border-slate-200">
                     <div>
                       <span className="block text-[10px] font-bold text-slate-500 mb-0.5">1. المدينة</span>
@@ -862,13 +1428,13 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
                     setIsAddModalOpen(false);
                     setEditingStudent(null);
                   }}
-                  className="px-4 py-2 text-xs font-bold rounded-xl border border-slate-200 text-slate-700"
+                  className="px-4 py-2 text-xs font-bold rounded-xl border border-slate-200 text-slate-700 cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs shadow-md"
+                  className="px-5 py-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs shadow-md cursor-pointer"
                 >
                   {editingStudent ? 'حفظ التعديلات' : 'إضافة الطالب'}
                 </button>
@@ -892,18 +1458,68 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({ adminUse
         />
       )}
 
-      {/* Delete Confirmation */}
+      {/* Typed-Name Delete Confirmation Modal */}
       {deleteCandidate && (
-        <ConfirmationModal
-          isOpen={!!deleteCandidate}
-          onClose={() => setDeleteCandidate(null)}
-          onConfirm={handleConfirmDelete}
-          title="حذف الطالب نهائياً"
-          message={`هل أنت متأكد من حذف الطالب (${deleteCandidate.name})؟\nسيتم حذف سجله بالكامل مع تسجيل العملية في سجل التدقيق الإداري.`}
-          confirmText="حذف الطالب"
-          cancelText="إلغاء"
-          type="danger"
-        />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in">
+          <div
+            className="w-full max-w-sm bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-scale-up text-right"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="h-2 w-full bg-gradient-to-r from-rose-500 to-red-600" />
+            <form onSubmit={handleConfirmDelete} className="p-5 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900">تأكيد حذف الطالب نهائياً</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    إجراء غير قابل للتراجع ويُسجَّل في سجل التدقيق
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-1">
+                <p className="font-bold">للمتابعة، اكتب اسم الطالب التالي كما هو تماماً:</p>
+                <p className="font-black text-sm select-all text-rose-700">{deleteCandidate.name}</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  اكتب اسم الطالب للتأكيد:
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmInput}
+                  onChange={(e) => setDeleteConfirmInput(e.target.value)}
+                  placeholder={deleteCandidate.name}
+                  className="w-full px-3 py-2.5 text-xs font-bold rounded-xl border border-slate-300 focus:outline-hidden focus:border-rose-600 bg-white"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2 pt-1">
+                <button
+                  type="submit"
+                  disabled={deleteConfirmInput.trim() !== deleteCandidate.name.trim()}
+                  className="w-full min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold text-xs transition-colors cursor-pointer disabled:cursor-not-allowed"
+                >
+                  حذف الطالب نهائياً
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteCandidate(null);
+                    setDeleteConfirmInput('');
+                  }}
+                  className="w-full min-h-[42px] rounded-xl font-bold text-xs text-slate-600 hover:bg-slate-100 border border-slate-200 cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

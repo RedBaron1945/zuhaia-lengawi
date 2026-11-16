@@ -122,6 +122,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } else {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     }
+    repository.setSessionUser(currentUser);
   }, [currentUser]);
 
   const login = async (email: string, pass: string): Promise<{ success: boolean; message?: string }> => {
@@ -227,40 +228,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true };
     }
 
-    // 4. Check against real teachers registered in the system
-    const teachers = repository.getTeachers();
-    const matchedTeacher = teachers.find(
-      (t) => t.email && t.email.toLowerCase() === cleanEmail
-    );
-    if (matchedTeacher) {
-      const user: User = {
-        id: `user_${matchedTeacher.id}`,
-        email: matchedTeacher.email || `${matchedTeacher.id}@zuhaia.com`,
-        name: matchedTeacher.name,
-        role: 'teacher',
-        circleId: matchedTeacher.circleIds[0] || 'circle_othman',
-        createdAt: new Date().toISOString(),
-      };
-      setCurrentUser(user);
-      return { success: true };
-    }
-
-    // 5. Check against real students registered in the system
-    const students = repository.getStudents();
-    const matchedStudent = students.find(
-      (s) => s.email && s.email.toLowerCase() === cleanEmail
-    );
-    if (matchedStudent) {
-      const user: User = {
-        id: `user_${matchedStudent.id}`,
-        email: matchedStudent.email,
-        name: matchedStudent.name,
-        role: 'student',
-        studentId: matchedStudent.id,
-        circleId: matchedStudent.circleId,
-        createdAt: new Date().toISOString(),
-      };
-      setCurrentUser(user);
+    // 4. Check local cache first, then targeted limit(1) Firestore lookup for newly added teachers/students
+    const matchedDynamicUser = await repository.lookupUserByEmail(cleanEmail);
+    if (matchedDynamicUser) {
+      setCurrentUser(matchedDynamicUser);
       return { success: true };
     }
 
@@ -271,6 +242,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    repository.setSessionUser(null);
     try {
       await signOut(auth);
     } catch (e) {

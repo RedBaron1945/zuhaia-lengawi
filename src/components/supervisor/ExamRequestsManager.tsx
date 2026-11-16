@@ -10,15 +10,9 @@ import {
   XCircle,
   Clock,
   Search,
-  Filter,
   User,
-  BookOpen,
-  Calendar,
   AlertCircle,
   RotateCcw,
-  Sparkles,
-  PhoneCall,
-  ChevronDown,
   X,
   Trash2,
 } from 'lucide-react';
@@ -43,7 +37,6 @@ export const ExamRequestsManager: React.FC<ExamRequestsManagerProps> = ({
 
   const circles = repository.getCircles();
   const nominations: ExamNomination[] = repository.getExamNominations();
-  const students = repository.getStudents();
 
   const handleConfirmDelete = () => {
     if (!deleteTarget) return;

@@ -7,7 +7,7 @@ import {
   Firestore,
   CACHE_SIZE_UNLIMITED,
 } from 'firebase/firestore';
-import { getAuth, signInAnonymously } from 'firebase/auth';
+import { getAuth } from 'firebase/auth';
 
 // Your web app's Firebase configuration provided by user
 export const firebaseConfig = {
@@ -40,14 +40,3 @@ try {
 
 export const db = firestoreDb;
 export const auth = getAuth(app);
-
-// Silently ensure an active Firebase Auth session so writes are never blocked
-if (typeof window !== 'undefined') {
-  auth.onAuthStateChanged((user) => {
-    if (!user) {
-      signInAnonymously(auth).catch(() => {
-        // Silently handle if anonymous auth is not enabled in Firebase Console
-      });
-    }
-  });
-}

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Circle, Student } from '../../types';
-import { BookOpen, Users, Check, X, Sparkles, MapPin, Clock } from 'lucide-react';
+import { Users, Check, X, MapPin, Clock } from 'lucide-react';
 
 interface TeacherSelectorModalProps {
   isOpen: boolean;

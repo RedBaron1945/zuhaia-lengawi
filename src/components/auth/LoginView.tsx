@@ -173,7 +173,7 @@ export const LoginView: React.FC = () => {
           <form onSubmit={handleSubmit} className="space-y-3.5">
             {/* Email Field */}
             <div className="pb-1">
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">
+              <label htmlFor="login-email" className="block text-xs font-bold text-slate-700 mb-1.5">
                 البريد الإلكتروني
               </label>
               <div className="relative">
@@ -181,7 +181,10 @@ export const LoginView: React.FC = () => {
                   <Mail className="w-4 h-4" />
                 </div>
                 <input
+                  id="login-email"
+                  name="email"
                   type="email"
+                  autoComplete="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -193,7 +196,7 @@ export const LoginView: React.FC = () => {
 
             {/* Password Field */}
             <div className="pt-0.5">
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">
+              <label htmlFor="login-password" className="block text-xs font-bold text-slate-700 mb-1.5">
                 كلمة المرور
               </label>
               <div className="relative">
@@ -201,7 +204,10 @@ export const LoginView: React.FC = () => {
                   <Key className="w-4 h-4" />
                 </div>
                 <input
+                  id="login-password"
+                  name="password"
                   type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

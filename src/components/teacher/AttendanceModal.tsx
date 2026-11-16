@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
-import { Check, X, Clock, Calendar, CheckCircle, AlertTriangle } from 'lucide-react';
+import { X } from 'lucide-react';
 
 interface AttendanceModalProps {
   isOpen: boolean;

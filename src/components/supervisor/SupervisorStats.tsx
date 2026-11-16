@@ -1,7 +1,7 @@
 import React from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
-import { Users, CheckCircle, BarChart3, TrendingUp, AlertTriangle, BookOpen, Award } from 'lucide-react';
+import { Users, CheckCircle, TrendingUp, BookOpen, Award } from 'lucide-react';
 import { CircleAttendanceComparison } from './CircleAttendanceComparison';
 
 interface SupervisorStatsProps {
@@ -11,7 +11,6 @@ interface SupervisorStatsProps {
 export const SupervisorStats: React.FC<SupervisorStatsProps> = ({ students }) => {
   const circles = repository.getCircles();
   const transactions = repository.getTransactions();
-  const attendanceHistory = repository.getAttendanceHistory();
 
   // Metrics
   const totalStudents = students.length;
@@ -29,31 +28,8 @@ export const SupervisorStats: React.FC<SupervisorStatsProps> = ({ students }) =>
         )
       : 0;
 
-  const totalAbsences = students.reduce((acc, s) => acc + s.consecutiveAbsences, 0);
-
   const memorizationTxCount = transactions.filter((t) => t.type === 'memorization').length;
   const revisionTxCount = transactions.filter((t) => t.type === 'revision').length;
-
-  // Circles comparison
-  const circleStats = circles.map((circle) => {
-    const cStudents = activeStudents.filter((s) => s.circleId === circle.id);
-    const cWithRecords = cStudents
-      .map((s) => repository.getStudentAttendanceStats(s.id))
-      .filter((st) => st.hasRecords);
-
-    const avgAtt =
-      cWithRecords.length > 0
-        ? Math.round(cWithRecords.reduce((acc, st) => acc + st.attendanceRate, 0) / cWithRecords.length)
-        : 0;
-    const totalPoints = cStudents.reduce((acc, s) => acc + s.currentPoints, 0);
-    return {
-      circle,
-      studentCount: cStudents.length,
-      hasRecords: cWithRecords.length > 0,
-      avgAttendance: avgAtt,
-      totalPoints,
-    };
-  });
 
   return (
     <div className="space-y-4">

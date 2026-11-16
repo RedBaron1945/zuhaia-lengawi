@@ -3,7 +3,6 @@ import { Student } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import {
-  AlertTriangle,
   Search,
   X,
   User,
@@ -15,9 +14,6 @@ import {
   Eye,
   GraduationCap,
   Users as UsersIcon,
-  ArrowUpDown,
-  UserCheck,
-  UserX,
   Trophy,
   Filter,
   Info,
@@ -979,7 +975,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                           <a
                             href={`https://wa.me/966${(selectedStudent.guardianPhone || selectedStudent.parentPhone)!.replace(/^0/, '')}`}
                             target="_blank"
-                            rel="noreferrer"
+                            rel="noopener noreferrer"
                             className="px-1.5 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold"
                             title="واتساب"
                           >

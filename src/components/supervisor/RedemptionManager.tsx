@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { RedemptionRequest } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
-import { Check, X, PackageCheck, RotateCcw, Clock3, AlertCircle, Sparkles, Calendar, Trash2 } from 'lucide-react';
+import { Check, X, PackageCheck, Clock3, AlertCircle, Calendar } from 'lucide-react';
 import { ConfirmationModal } from '../common/ConfirmationModal';
 import { formatHijriDateTime } from '../../utils/dateUtils';
 
@@ -12,7 +12,7 @@ interface RedemptionManagerProps {
 }
 
 export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, supervisorName }) => {
-  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'delivered' | 'rejected'>('all');
+  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'ready' | 'delivered' | 'rejected'>('all');
   const [selectedReq, setSelectedReq] = useState<RedemptionRequest | null>(null);
   const [deleteConfirmReq, setDeleteConfirmReq] = useState<RedemptionRequest | null>(null);
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
@@ -29,7 +29,19 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
       handledBy: supervisorName,
     });
     if (res.success) {
-      showToast(`تمت الموافقة على طلب ${req.rewardTitle} للطالب ${req.studentName} ✓`, 'success');
+      showToast(`تمت الموافقة وجاري تجهيز طلب ${req.rewardTitle} للطالب ${req.studentName} ✓`, 'success');
+      if (onUpdate) onUpdate();
+    }
+  };
+
+  const handleMarkReady = (req: RedemptionRequest) => {
+    const res = repository.updateRedemptionStatus({
+      requestId: req.id,
+      status: 'ready',
+      handledBy: supervisorName,
+    });
+    if (res.success) {
+      showToast(`تم تحديث طلب ${req.rewardTitle} إلى "جاهز للاستلام" للطالب ${req.studentName} ✓`, 'success');
       if (onUpdate) onUpdate();
     }
   };
@@ -86,18 +98,19 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
   return (
     <div className="space-y-3">
       {/* Filter Tabs - Distributed Evenly */}
-      <div className="grid grid-cols-5 gap-1 bg-slate-100 p-1 rounded-2xl border border-slate-200/90 w-full text-[11px] font-bold">
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 bg-slate-100 p-1 rounded-2xl border border-slate-200/90 w-full text-[11px] font-bold">
         {[
           { id: 'all', label: 'الكل' },
           { id: 'pending', label: 'معلقة' },
-          { id: 'approved', label: 'مقبولة' },
+          { id: 'approved', label: 'جاري التجهيز' },
+          { id: 'ready', label: 'جاهز للاستلام' },
           { id: 'delivered', label: 'مسلّمة' },
           { id: 'rejected', label: 'مرفوضة' },
         ].map((tab) => (
           <button
             key={tab.id}
             onClick={() => setFilter(tab.id as any)}
-            className={`py-2 rounded-xl font-extrabold transition-all text-center cursor-pointer ${
+            className={`py-2 px-1 rounded-xl font-extrabold transition-all text-center cursor-pointer whitespace-nowrap truncate ${
               filter === tab.id
                 ? 'bg-teal-700 text-white shadow-2xs'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
@@ -153,6 +166,8 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
                       req.status === 'pending'
                         ? 'bg-amber-100 text-amber-900 border border-amber-200'
                         : req.status === 'approved'
+                        ? 'bg-sky-50 text-sky-800 border border-sky-200'
+                        : req.status === 'ready'
                         ? 'bg-teal-50 text-teal-800 border border-teal-200'
                         : req.status === 'delivered'
                         ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
@@ -161,9 +176,11 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
                   >
                     {req.status === 'pending' && <Clock3 className="w-3.5 h-3.5" />}
                     {req.status === 'pending'
-                      ? 'قيد المراجعة'
+                      ? 'بانتظار الموافقة'
                       : req.status === 'approved'
-                      ? 'تمت الموافقة'
+                      ? 'جاري التجهيز'
+                      : req.status === 'ready'
+                      ? 'جاهز للاستلام'
                       : req.status === 'delivered'
                       ? 'تم التسليم'
                       : 'مرفوض'}
@@ -203,6 +220,25 @@ export const RedemptionManager: React.FC<RedemptionManagerProps> = ({ onUpdate, 
                 )}
 
                 {req.status === 'approved' && (
+                  <div className="flex items-center gap-2 w-full">
+                    <button
+                      onClick={() => handleMarkReady(req)}
+                      className="flex-1 min-h-[44px] rounded-xl bg-sky-700 hover:bg-sky-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs active:scale-[0.98] transition-all cursor-pointer"
+                    >
+                      <PackageCheck className="w-4 h-4" />
+                      <span>جاهز للاستلام</span>
+                    </button>
+                    <button
+                      onClick={() => handleDeliver(req)}
+                      className="min-h-[44px] px-4 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-xs flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>تم التسليم مباشرة</span>
+                    </button>
+                  </div>
+                )}
+
+                {req.status === 'ready' && (
                   <button
                     onClick={() => handleDeliver(req)}
                     className="w-full min-h-[44px] rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs active:scale-[0.98] transition-all cursor-pointer"

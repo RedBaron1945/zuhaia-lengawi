@@ -15,8 +15,9 @@ import {
   ExamNomination,
   ExamNominationStatus,
   SupportTicket,
-  SupportTicketType,
   SupportTicketPriority,
+  SupportTicketReply,
+  User,
 } from '../types';
 import {
   INITIAL_STUDENTS,
@@ -40,7 +41,12 @@ import {
   deleteDoc,
   onSnapshot,
   getDoc,
+  getDocs,
   onSnapshotsInSync,
+  query,
+  where,
+  orderBy,
+  limit,
 } from 'firebase/firestore';
 
 const STORAGE_KEYS = {
@@ -59,7 +65,15 @@ const STORAGE_KEYS = {
   PURGED_MOCK: 'tartil_mock_purged_flag_v2',
   EXAM_NOMINATIONS: 'tartil_exam_nominations_v2',
   SUPPORT_TICKETS: 'tartil_support_tickets_v1',
+  STATIC_CACHE_META: 'tartil_static_cache_meta_v1',
+  SESSION_OWNER: 'tartil_session_owner_v1',
+  DELETED_STUDENTS: 'tartil_deleted_students_v1',
 };
+
+const CIRCLES_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const TEACHERS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const REWARDS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const AUDIT_LOGS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 // Auto-purge any legacy mock data from browser localStorage once
 try {
@@ -200,6 +214,34 @@ function saveItem<T>(key: string, data: T): void {
   }
 }
 
+function computeStudentBalancesMap(transactions: PointTransaction[]): Map<string, number> {
+  const byStudent = new Map<string, PointTransaction[]>();
+  transactions.forEach((tx) => {
+    if (tx.studentId && typeof tx.amount === 'number') {
+      const list = byStudent.get(tx.studentId);
+      if (list) list.push(tx);
+      else byStudent.set(tx.studentId, [tx]);
+    }
+  });
+
+  const balances = new Map<string, number>();
+  byStudent.forEach((txs, studentId) => {
+    const sorted = [...txs].sort((a, b) => {
+      const da = (a.date || '').split('T')[0];
+      const db = (b.date || '').split('T')[0];
+      if (da !== db) return da.localeCompare(db);
+      return (b.amount || 0) - (a.amount || 0);
+    });
+    let balance = 0;
+    for (const tx of sorted) {
+      balance = Math.max(0, balance + tx.amount);
+    }
+    balances.set(studentId, balance);
+  });
+
+  return balances;
+}
+
 // Helper to strip undefined values so Firestore setDoc never throws Unsupported field value: undefined
 function sanitizeForFirestore<T>(data: T): Record<string, any> {
   return JSON.parse(JSON.stringify(data));
@@ -207,7 +249,72 @@ function sanitizeForFirestore<T>(data: T): Record<string, any> {
 
 // In-memory cache of synced items to eliminate redundant writes and downstream read cycles
 const syncedHashes = new Map<string, string>();
-const deletedDocIds = new Set<string>();
+const HARD_DELETED_SEED_STUDENT_IDS = ['umJD21AJBZfD8d4HapZdLR4izc92'];
+const deletedDocIds = new Set<string>([
+  ...HARD_DELETED_SEED_STUDENT_IDS,
+  ...(typeof localStorage !== 'undefined'
+    ? loadItem<string[]>(STORAGE_KEYS.DELETED_STUDENTS, [])
+    : []),
+]);
+
+function getPersistedDeletedStudentIds(): Set<string> {
+  const saved = typeof localStorage !== 'undefined'
+    ? loadItem<string[]>(STORAGE_KEYS.DELETED_STUDENTS, [])
+    : [];
+  const merged = new Set<string>([...HARD_DELETED_SEED_STUDENT_IDS, ...saved]);
+  merged.forEach((id) => deletedDocIds.add(id));
+  return merged;
+}
+
+function savePersistedDeletedStudentIds(ids: Set<string>): void {
+  const arr = Array.from(ids);
+  arr.forEach((id) => deletedDocIds.add(id));
+  if (typeof localStorage !== 'undefined') {
+    saveItem(STORAGE_KEYS.DELETED_STUDENTS, arr);
+  }
+}
+
+async function syncDeletedStudentsTombstonesToFirestore(ids: Set<string>): Promise<void> {
+  try {
+    await setDoc(doc(db, 'rules', 'deleted_students'), {
+      id: 'deleted_students',
+      ids: Array.from(ids),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    console.warn('Firestore deleted_students tombstone sync notice:', err?.message || err);
+  }
+}
+
+async function cascadeDeleteStudentInFirestore(studentId: string): Promise<void> {
+  const studentChildCollections = [
+    'transactions',
+    'evaluations',
+    'attendance',
+    'redemptions',
+    'exam_nominations',
+  ];
+
+  await Promise.all(
+    studentChildCollections.map(async (colName) => {
+      try {
+        const snap = await getDocs(
+          query(collection(db, colName), where('studentId', '==', studentId))
+        );
+        if (!snap.empty) {
+          await Promise.all(
+            snap.docs.map(async (d) => {
+              deletedDocIds.add(d.id);
+              await deleteDoc(doc(db, colName, d.id));
+            })
+          );
+        }
+      } catch (err: any) {
+        console.warn(`Cascade delete notice (${colName} for ${studentId}):`, err?.message || err);
+      }
+    })
+  );
+}
 
 // Asynchronous Firestore Sync Helpers
 async function syncToFirestore<T extends { id: string }>(collectionName: string, item: T) {
@@ -246,6 +353,54 @@ async function syncToFirestore<T extends { id: string }>(collectionName: string,
   }
 }
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 async function deleteFromFirestore(collectionName: string, id: string) {
   try {
     if (!id) return;
@@ -279,6 +434,7 @@ export const triggerManualSync = async (): Promise<void> => {
   try {
     updateSyncState({ status: 'syncing' });
     await getDoc(doc(db, 'rules', 'default_rules'));
+    await repository.refreshStaticCaches(true);
     updateSyncState({
       status: 'connected',
       lastUpdated: new Date(),
@@ -303,6 +459,7 @@ export interface IRepository {
 
   // Circles & Teachers
   getCircles(): Circle[];
+  getCirclesForTeacher(teacherId: string, fallbackCircleId?: string): Circle[];
   getCircleById(id: string): Circle | undefined;
   saveCircle(circle: Circle, actor: { id: string; name: string; role: Role }): void;
   getTeachers(): Teacher[];
@@ -375,8 +532,8 @@ export interface IRepository {
     teacherName?: string;
   }): { success: boolean; message: string; deletedRecord?: EvaluationRecord };
   getEvaluationForStudentAndDate(studentId: string, date: string): EvaluationRecord | undefined;
-  getEvaluationsForCircleAndDate(circleId: string, date: string): EvaluationRecord[];
-  getEvaluationsForCircleAndWeek(circleId: string, weekDates: string[]): EvaluationRecord[];
+  getEvaluationsForCircleAndDate(circleId: string | string[], date: string): EvaluationRecord[];
+  getEvaluationsForCircleAndWeek(circleId: string | string[], weekDates: string[]): EvaluationRecord[];
 
   // Rewards & Redemptions
   getRewards(): Reward[];
@@ -407,6 +564,7 @@ export interface IRepository {
 
   // Audit Logs & Achievements
   getAuditLogs(): AuditLog[];
+  refreshAuditLogs(force?: boolean): Promise<void>;
   addAuditLog(log: Omit<AuditLog, 'id' | 'timestamp'>): void;
   deleteAuditLog(logId: string): { success: boolean; message: string };
   clearAllAuditLogs(): { success: boolean; message: string };
@@ -437,23 +595,42 @@ export interface IRepository {
 
   // Support Tickets (الدعم الفني)
   getSupportTickets(): SupportTicket[];
+  getSupportTicketsForUser(user: User): SupportTicket[];
   createSupportTicket(ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'status' | 'priority'> & { priority?: SupportTicketPriority }): { success: boolean; message: string; ticket: SupportTicket };
   updateSupportTicket(ticketId: string, updates: Partial<Pick<SupportTicket, 'priority' | 'status'>>): { success: boolean; message: string };
-  deleteSupportTicket(ticketId: string): { success: boolean; message: string };
+  replyToSupportTicket(params: {
+    ticketId: string;
+    message: string;
+    senderName: string;
+    senderRole: Role;
+    markResolved?: boolean;
+  }): { success: boolean; message: string; ticket?: SupportTicket };
+  markSupportTicketAsRead(ticketId: string): { success: boolean };
+  closeSupportTicket(ticketId: string): Promise<{ success: boolean; message: string }>;
+  deleteSupportTicket(ticketId: string): Promise<{ success: boolean; message: string }>;
+
+  // Session & Cache Control
+  setSessionUser(user: User | null): void;
+  refreshStaticCaches(force?: boolean): Promise<void>;
+  lookupUserByEmail(email: string): Promise<User | null>;
 
   // Reset
   resetToDefaults(): void;
 }
 
 class FirestoreConnectedRepository implements IRepository {
-  private listenersInitialized = false;
   private unsubscribers: (() => void)[] = [];
+  private activeSessionKey: string | null = null;
+  private activeUser: User | null = null;
+  private ledgerScope: 'none' | 'student' | 'all' = 'none';
+  private hasEvaluationsScope = false;
+  private scopedStudentId: string | null = null;
+  private scopedCircleId: string | null = null;
+  private scopedCircleIds: Set<string> = new Set();
+  private staticInFlight = new Map<string, Promise<void>>();
 
   constructor() {
-    this.reconcileStudentPointsFromTransactions();
-    this.reconcileStudentAttendance();
-    this.initFirestoreRealtimeListeners();
-    this.recalculateCircleStudentCounts();
+    // 0 Firestore reads at module boot / LoginView — listeners and cached static fetches start only in setSessionUser()
     this.seedInitialDataIfEmpty();
   }
 
@@ -465,9 +642,652 @@ class FirestoreConnectedRepository implements IRepository {
     }
   }
 
+  private teardownListeners() {
+    this.unsubscribers.forEach((unsub) => {
+      try {
+        unsub();
+      } catch {
+        // ignore unsubscribe errors
+      }
+    });
+    this.unsubscribers = [];
+  }
+
+  private clearScopedRuntimeCaches() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.removeItem(STORAGE_KEYS.EVALUATIONS);
+      localStorage.removeItem(STORAGE_KEYS.TRANSACTIONS);
+      localStorage.removeItem(STORAGE_KEYS.REDEMPTIONS);
+      localStorage.removeItem(STORAGE_KEYS.EXAM_NOMINATIONS);
+      localStorage.removeItem(STORAGE_KEYS.SUPPORT_TICKETS);
+      localStorage.removeItem(STORAGE_KEYS.AUDIT_LOGS);
+      const meta = this.getStaticCacheMeta();
+      if (meta.audit_logs) {
+        delete meta.audit_logs;
+        saveItem(STORAGE_KEYS.STATIC_CACHE_META, meta);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  private getStaticCacheMeta(): Record<string, number> {
+    return loadItem<Record<string, number>>(STORAGE_KEYS.STATIC_CACHE_META, {});
+  }
+
+  private markStaticCacheFresh(colName: 'circles' | 'teachers' | 'rewards') {
+    const meta = this.getStaticCacheMeta();
+    meta[colName] = Date.now();
+    saveItem(STORAGE_KEYS.STATIC_CACHE_META, meta);
+  }
+
+  private async fetchStaticCollectionCached<T extends { id: string }>(options: {
+    colName: 'circles' | 'teachers' | 'rewards';
+    storageKey: string;
+    ttlMs: number;
+    force?: boolean;
+  }): Promise<void> {
+    const { colName, storageKey, ttlMs, force } = options;
+
+    try {
+      const meta = this.getStaticCacheMeta();
+      const lastFetchedAt = meta[colName] || 0;
+      const hasCachedPayload =
+        typeof localStorage !== 'undefined' && Boolean(localStorage.getItem(storageKey));
+
+      if (!force && hasCachedPayload && Date.now() - lastFetchedAt < ttlMs) {
+        return;
+      }
+
+      const existingPromise = this.staticInFlight.get(colName);
+      if (existingPromise && !force) {
+        return existingPromise;
+      }
+
+      const fetchPromise = (async () => {
+        try {
+          const snapshot = await getDocs(collection(db, colName));
+          if (!snapshot.empty) {
+            const list: T[] = [];
+            snapshot.forEach((d) => {
+              const item = d.data() as T;
+              if (item && item.id && !deletedDocIds.has(item.id)) {
+                list.push(item);
+              }
+            });
+            saveItem(storageKey, list);
+            if (colName === 'circles') {
+              this.recalculateCircleStudentCounts();
+            }
+            debouncedNotifySubscribers();
+          }
+          this.markStaticCacheFresh(colName);
+        } catch (err: any) {
+          console.warn(`Static cached fetch notice (${colName}):`, err?.message || err);
+        } finally {
+          this.staticInFlight.delete(colName);
+        }
+      })();
+
+      this.staticInFlight.set(colName, fetchPromise);
+      await fetchPromise;
+    } catch (e) {
+      console.warn(`Static fetch error (${colName}):`, e);
+    }
+  }
+
+  private async syncDeletedStudentsFromFirestore(force = false): Promise<void> {
+    try {
+      const meta = this.getStaticCacheMeta();
+      const lastFetchedAt = meta.deleted_students || 0;
+      if (!force && Date.now() - lastFetchedAt < CIRCLES_CACHE_TTL_MS) {
+        return;
+      }
+
+      const snap = await getDoc(doc(db, 'rules', 'deleted_students'));
+      const merged = getPersistedDeletedStudentIds();
+      if (snap.exists()) {
+        const remoteIds = snap.data()?.ids;
+        if (Array.isArray(remoteIds)) {
+          remoteIds.forEach((id) => {
+            if (typeof id === 'string' && id.trim()) {
+              merged.add(id.trim());
+            }
+          });
+        }
+      }
+      savePersistedDeletedStudentIds(merged);
+
+      const students = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+      const cleaned = students.filter((s) => !merged.has(s.id));
+      if (cleaned.length !== students.length) {
+        saveItem(STORAGE_KEYS.STUDENTS, cleaned);
+        this.recalculateCircleStudentCounts();
+        debouncedNotifySubscribers();
+      }
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.deleted_students = Date.now();
+
+      // One-time admin cleanup to guarantee previously deleted seed students have zero orphan records in Firestore
+      if (this.activeUser?.role === 'admin' && !nextMeta.hard_deleted_purge_v1) {
+        nextMeta.hard_deleted_purge_v1 = Date.now();
+        await Promise.all(
+          HARD_DELETED_SEED_STUDENT_IDS.map(async (sid) => {
+            deleteFromFirestore('students', sid);
+            await cascadeDeleteStudentInFirestore(sid);
+          })
+        );
+        await syncDeletedStudentsTombstonesToFirestore(merged);
+      }
+
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+    } catch (err: any) {
+      console.warn('Deleted students tombstone fetch notice:', err?.message || err);
+    }
+  }
+
+  private async ensureLinkedSaeedStudentsInFirestore(): Promise<void> {
+    try {
+      const user = this.activeUser;
+      if (!user) return;
+
+      const meta = this.getStaticCacheMeta();
+      if (meta.linked_saeed_students_v1) return;
+
+      const LINKED_SAEED_STUDENT_IDS = [
+        '4ipFtSNlHdhOieigmbpJodTn2Gx2',
+        'P2HiDOdD6qVQl8j7owLyZ7b0VRA2',
+      ];
+      const activeStudentId = user.studentId || user.id;
+      const isRelevantUser =
+        user.role === 'admin' ||
+        user.role === 'supervisor' ||
+        (user.role === 'teacher' && normalizeCircleId(user.circleId || '') === 'circle_saeed') ||
+        (user.role === 'student' && LINKED_SAEED_STUDENT_IDS.includes(activeStudentId));
+
+      if (!isRelevantUser) return;
+
+      const deletedIds = getPersistedDeletedStudentIds();
+      const targetIds =
+        user.role === 'student' ? [activeStudentId] : LINKED_SAEED_STUDENT_IDS;
+
+      await Promise.all(
+        targetIds.map(async (sid) => {
+          if (deletedIds.has(sid)) return;
+          const seed = INITIAL_STUDENTS.find((s) => s.id === sid);
+          if (!seed) return;
+
+          const studentRef = doc(db, 'students', sid);
+          const snap = await getDoc(studentRef);
+          if (!snap.exists()) {
+            await setDoc(studentRef, sanitizeForFirestore(seed));
+          } else {
+            const data = snap.data() as Partial<Student> | undefined;
+            if (normalizeCircleId(data?.circleId) !== 'circle_saeed' || !data?.name) {
+              await setDoc(
+                studentRef,
+                {
+                  circleId: 'circle_saeed',
+                  ...(data?.name ? {} : { name: seed.name }),
+                },
+                { merge: true }
+              );
+            }
+          }
+
+          await setDoc(
+            doc(db, 'users', sid),
+            {
+              id: sid,
+              uid: sid,
+              name: seed.name,
+              role: 'student',
+              studentId: sid,
+              circleId: 'circle_saeed',
+              createdAt: '2026-10-28T00:00:00Z',
+            },
+            { merge: true }
+          );
+        })
+      );
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.linked_saeed_students_v1 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Linked Saeed students sync notice:', err?.message || err);
+    }
+  }
+
+  private getTeacherCircleIds(user: User): string[] {
+    const ordered: string[] = [];
+    const seen = new Set<string>();
+    const addCircleId = (raw?: string) => {
+      if (!raw) return;
+      const norm = normalizeCircleId(raw);
+      if (!seen.has(norm)) {
+        seen.add(norm);
+        ordered.push(norm);
+      }
+    };
+
+    const initialTeacher = INITIAL_TEACHERS.find((t) => t.id === user.id);
+    initialTeacher?.circleIds.forEach(addCircleId);
+
+    const cachedTeacher = this.getTeachers().find((t) => t.id === user.id);
+    cachedTeacher?.circleIds?.forEach(addCircleId);
+
+    INITIAL_CIRCLES.filter((c) => c.teacherId === user.id).forEach((c) => addCircleId(c.id));
+    this.getCircles()
+      .filter((c) => c.teacherId === user.id)
+      .forEach((c) => addCircleId(c.id));
+
+    if (user.circleId) addCircleId(user.circleId);
+    if (ordered.length === 0) addCircleId('circle_othman');
+
+    return ordered;
+  }
+
+  private async ensureOmarAbdulazizCircleAndStudentsInFirestore(): Promise<void> {
+    try {
+      const user = this.activeUser;
+      if (!user) return;
+
+      const meta = this.getStaticCacheMeta();
+      if (meta.linked_omar_abdulaziz_v1 && meta.baabad_saeed_first_v1) return;
+
+      if (meta.linked_omar_abdulaziz_v1 && !meta.baabad_saeed_first_v1) {
+        if (
+          user.role === 'admin' ||
+          user.role === 'supervisor' ||
+          (user.role === 'teacher' && user.id === 'NSmjSrHJZ6Ozr23TgdRms2qvPI32')
+        ) {
+          const teacherSeed = INITIAL_TEACHERS.find((t) => t.id === 'NSmjSrHJZ6Ozr23TgdRms2qvPI32');
+          if (teacherSeed) {
+            await setDoc(
+              doc(db, 'teachers', teacherSeed.id),
+              sanitizeForFirestore(teacherSeed),
+              { merge: true }
+            );
+          }
+          const nextMeta = this.getStaticCacheMeta();
+          nextMeta.baabad_saeed_first_v1 = Date.now();
+          saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+          debouncedNotifySubscribers();
+        }
+        return;
+      }
+
+      const OMAR_ABDULAZIZ_STUDENT_IDS = INITIAL_STUDENTS.filter(
+        (s) => s.circleId === 'circle_omar_abdulaziz'
+      ).map((s) => s.id);
+      const activeStudentId = user.studentId || user.id;
+      const teacherCircleIds = user.role === 'teacher' ? this.getTeacherCircleIds(user) : [];
+
+      const isRelevantUser =
+        user.role === 'admin' ||
+        user.role === 'supervisor' ||
+        (user.role === 'teacher' &&
+          (user.id === 'NSmjSrHJZ6Ozr23TgdRms2qvPI32' ||
+            teacherCircleIds.includes('circle_omar_abdulaziz'))) ||
+        (user.role === 'student' && OMAR_ABDULAZIZ_STUDENT_IDS.includes(activeStudentId));
+
+      if (!isRelevantUser) return;
+
+      // Ensure Omar bin Abdulaziz circle + teacher Ali Baabad assignment exist in Firestore
+      if (user.role === 'admin' || user.role === 'supervisor' || user.role === 'teacher') {
+        const circleSeed = INITIAL_CIRCLES.find((c) => c.id === 'circle_omar_abdulaziz');
+        if (circleSeed) {
+          await setDoc(doc(db, 'circles', circleSeed.id), sanitizeForFirestore(circleSeed), {
+            merge: true,
+          });
+        }
+        const teacherSeed = INITIAL_TEACHERS.find((t) => t.id === 'NSmjSrHJZ6Ozr23TgdRms2qvPI32');
+        if (teacherSeed) {
+          await setDoc(
+            doc(db, 'teachers', teacherSeed.id),
+            sanitizeForFirestore(teacherSeed),
+            { merge: true }
+          );
+        }
+      }
+
+      const deletedIds = getPersistedDeletedStudentIds();
+      const targetIds =
+        user.role === 'student' ? [activeStudentId] : OMAR_ABDULAZIZ_STUDENT_IDS;
+
+      await Promise.all(
+        targetIds.map(async (sid) => {
+          if (deletedIds.has(sid)) return;
+          const seed = INITIAL_STUDENTS.find((s) => s.id === sid);
+          if (!seed) return;
+
+          const studentRef = doc(db, 'students', sid);
+          const snap = await getDoc(studentRef);
+          if (!snap.exists()) {
+            await setDoc(studentRef, sanitizeForFirestore(seed));
+          } else {
+            const data = snap.data() as Partial<Student> | undefined;
+            if (normalizeCircleId(data?.circleId) !== 'circle_omar_abdulaziz' || !data?.name) {
+              await setDoc(
+                studentRef,
+                {
+                  circleId: 'circle_omar_abdulaziz',
+                  ...(data?.name ? {} : { name: seed.name }),
+                },
+                { merge: true }
+              );
+            }
+          }
+
+          await setDoc(
+            doc(db, 'users', sid),
+            {
+              id: sid,
+              uid: sid,
+              name: seed.name,
+              role: 'student',
+              studentId: sid,
+              circleId: 'circle_omar_abdulaziz',
+              createdAt: '2026-10-28T00:00:00Z',
+            },
+            { merge: true }
+          );
+        })
+      );
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.linked_omar_abdulaziz_v1 = Date.now();
+      nextMeta.baabad_saeed_first_v1 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Linked Omar Abdulaziz students sync notice:', err?.message || err);
+    }
+  }
+
+  public async refreshStaticCaches(force = false): Promise<void> {
+    const role = this.activeUser?.role;
+    if (!role) return;
+
+    const tasks: Promise<void>[] = [
+      this.fetchStaticCollectionCached<Circle>({
+        colName: 'circles',
+        storageKey: STORAGE_KEYS.CIRCLES,
+        ttlMs: CIRCLES_CACHE_TTL_MS,
+        force,
+      }),
+      this.syncDeletedStudentsFromFirestore(force).then(async () => {
+        await this.ensureLinkedSaeedStudentsInFirestore();
+        await this.ensureOmarAbdulazizCircleAndStudentsInFirestore();
+      }),
+    ];
+
+    if (role === 'teacher' || role === 'supervisor' || role === 'admin') {
+      tasks.push(
+        this.fetchStaticCollectionCached<Teacher>({
+          colName: 'teachers',
+          storageKey: STORAGE_KEYS.TEACHERS,
+          ttlMs: TEACHERS_CACHE_TTL_MS,
+          force,
+        })
+      );
+    }
+
+    if (role === 'student' || role === 'admin') {
+      tasks.push(
+        this.fetchStaticCollectionCached<Reward>({
+          colName: 'rewards',
+          storageKey: STORAGE_KEYS.REWARDS,
+          ttlMs: REWARDS_CACHE_TTL_MS,
+          force,
+        })
+      );
+    }
+
+    if (role === 'admin') {
+      tasks.push(this.refreshAuditLogs(force));
+    }
+
+    await Promise.all(tasks);
+  }
+
+  public async refreshAuditLogs(force = false): Promise<void> {
+    if (this.activeUser?.role !== 'admin') return;
+    try {
+      const meta = this.getStaticCacheMeta();
+      const lastFetchedAt = meta.audit_logs || 0;
+      const hasCached =
+        typeof localStorage !== 'undefined' && Boolean(localStorage.getItem(STORAGE_KEYS.AUDIT_LOGS));
+
+      if (!force && hasCached && Date.now() - lastFetchedAt < AUDIT_LOGS_CACHE_TTL_MS) {
+        return;
+      }
+
+      const existingPromise = this.staticInFlight.get('audit_logs');
+      if (existingPromise && !force) {
+        return existingPromise;
+      }
+
+      const fetchPromise = (async () => {
+        try {
+          const snap = await getDocs(
+            query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(150))
+          );
+          const mergedMap = new Map<string, AuditLog>();
+          if (!snap.empty) {
+            snap.forEach((d) => {
+              const log = d.data() as AuditLog;
+              if (log && log.id && !deletedDocIds.has(log.id)) {
+                mergedMap.set(log.id, log);
+              }
+            });
+          }
+          // Preserve any local logs added just moments ago before server echo
+          this.getAuditLogs().forEach((localLog) => {
+            if (localLog && localLog.id && !deletedDocIds.has(localLog.id) && !mergedMap.has(localLog.id)) {
+              mergedMap.set(localLog.id, localLog);
+            }
+          });
+
+          const sorted = Array.from(mergedMap.values())
+            .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+            .slice(0, 150);
+
+          saveItem(STORAGE_KEYS.AUDIT_LOGS, sorted);
+          const nextMeta = this.getStaticCacheMeta();
+          nextMeta.audit_logs = Date.now();
+          saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+          debouncedNotifySubscribers();
+        } catch (err: any) {
+          console.warn('Audit logs fetch notice:', err?.message || err);
+        } finally {
+          this.staticInFlight.delete('audit_logs');
+        }
+      })();
+
+      this.staticInFlight.set('audit_logs', fetchPromise);
+      await fetchPromise;
+    } catch (e) {
+      console.warn('Audit logs refresh error:', e);
+    }
+  }
+
+  public async lookupUserByEmail(email: string): Promise<User | null> {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) return null;
+
+    // 1. Check local cache first (0 Firestore reads)
+    const localTeacher = this.getTeachers().find(
+      (t) => t.email && t.email.trim().toLowerCase() === cleanEmail
+    );
+    if (localTeacher) {
+      return {
+        id: `user_${localTeacher.id}`,
+        email: localTeacher.email || `${localTeacher.id}@zuhaia.com`,
+        name: localTeacher.name,
+        role: 'teacher',
+        circleId: localTeacher.circleIds?.[0] || 'circle_othman',
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    const localStudent = this.getStudents().find(
+      (s) => s.email && s.email.trim().toLowerCase() === cleanEmail
+    );
+    if (localStudent) {
+      return {
+        id: `user_${localStudent.id}`,
+        email: localStudent.email,
+        name: localStudent.name,
+        role: 'student',
+        studentId: localStudent.id,
+        circleId: localStudent.circleId,
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    // 2. Targeted limit(1) query fallback ONLY when not found locally
+    try {
+      const teacherSnap = await getDocs(
+        query(collection(db, 'teachers'), where('email', '==', cleanEmail), limit(1))
+      );
+      if (!teacherSnap.empty) {
+        const t = teacherSnap.docs[0].data() as Teacher;
+        if (t && t.id) {
+          return {
+            id: `user_${t.id}`,
+            email: t.email || cleanEmail,
+            name: t.name,
+            role: 'teacher',
+            circleId: t.circleIds?.[0] || 'circle_othman',
+            createdAt: new Date().toISOString(),
+          };
+        }
+      }
+
+      const studentSnap = await getDocs(
+        query(collection(db, 'students'), where('email', '==', cleanEmail), limit(1))
+      );
+      if (!studentSnap.empty) {
+        const s = studentSnap.docs[0].data() as Student;
+        const deletedIds = getPersistedDeletedStudentIds();
+        if (s && s.id && !deletedIds.has(s.id)) {
+          return {
+            id: `user_${s.id}`,
+            email: s.email || cleanEmail,
+            name: s.name,
+            role: 'student',
+            studentId: s.id,
+            circleId: s.circleId,
+            createdAt: new Date().toISOString(),
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Email lookup fallback notice:', err);
+    }
+
+    return null;
+  }
+
+  private getSessionKeyForUser(user: User | null): string | null {
+    if (!user) return null;
+    if (user.role === 'student') {
+      const sId = user.studentId || user.id;
+      return `student:${sId}:${(user.email || '').toLowerCase()}`;
+    }
+    if (user.role === 'teacher') {
+      const cId = normalizeCircleId(user.circleId || 'circle_othman');
+      return `teacher:${cId}:${user.id}:${(user.email || '').toLowerCase()}`;
+    }
+    return `${user.role}:${user.id}`;
+  }
+
+  public setSessionUser(user: User | null): void {
+    const nextKey = this.getSessionKeyForUser(user);
+    if (nextKey === this.activeSessionKey) {
+      return;
+    }
+
+    this.teardownListeners();
+    this.activeSessionKey = nextKey;
+    this.activeUser = user;
+
+    if (!user || !nextKey) {
+      this.ledgerScope = 'none';
+      this.hasEvaluationsScope = false;
+      this.scopedStudentId = null;
+      this.scopedCircleId = null;
+      this.scopedCircleIds = new Set();
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(STORAGE_KEYS.SESSION_OWNER);
+      }
+      this.clearScopedRuntimeCaches();
+      updateSyncState({
+        status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'connected',
+        errorMessage: undefined,
+      });
+      return;
+    }
+
+    // Clear stale scoped data only if switching to a DIFFERENT account on this device
+    if (typeof localStorage !== 'undefined') {
+      const prevOwner = localStorage.getItem(STORAGE_KEYS.SESSION_OWNER);
+      if (prevOwner && prevOwner !== nextKey) {
+        this.clearScopedRuntimeCaches();
+      }
+      localStorage.setItem(STORAGE_KEYS.SESSION_OWNER, nextKey);
+    }
+
+    if (user.role === 'student') {
+      this.ledgerScope = 'student';
+      this.hasEvaluationsScope = true;
+      this.scopedStudentId = user.studentId || user.id;
+      this.scopedCircleId = user.circleId ? normalizeCircleId(user.circleId) : null;
+      this.scopedCircleIds = this.scopedCircleId ? new Set([this.scopedCircleId]) : new Set();
+    } else if (user.role === 'teacher') {
+      const teacherCircleIds = this.getTeacherCircleIds(user);
+      this.ledgerScope = 'none';
+      this.hasEvaluationsScope = true;
+      this.scopedStudentId = null;
+      this.scopedCircleId = teacherCircleIds[0] || normalizeCircleId(user.circleId || 'circle_othman');
+      this.scopedCircleIds = new Set(teacherCircleIds);
+    } else if (user.role === 'supervisor') {
+      this.ledgerScope = 'all';
+      this.hasEvaluationsScope = true;
+      this.scopedStudentId = null;
+      this.scopedCircleId = null;
+      this.scopedCircleIds = new Set();
+    } else {
+      // admin
+      this.ledgerScope = 'all';
+      this.hasEvaluationsScope = false;
+      this.scopedStudentId = null;
+      this.scopedCircleId = null;
+      this.scopedCircleIds = new Set();
+    }
+
+    // Run local-only reconciliation appropriate for the active role
+    this.reconcileStudentPointsFromTransactions();
+    this.reconcileStudentAttendance();
+    this.recalculateCircleStudentCounts();
+
+    // Load static collections via TTL-cached getDocs
+    void this.refreshStaticCaches(false);
+
+    // Start role-scoped real-time Firestore listeners
+    this.initScopedFirestoreListeners(user);
+    debouncedNotifySubscribers();
+  }
+
   /**
-   * Reconciles currentPoints for every student against the transactions ledger.
-   * Guarantees that points displayed and persisted in Firestore never diverge from recorded transactions.
+   * Reconciles currentPoints against transactions ledger strictly within the active role's scope.
    */
   public reconcileStudentPointsFromTransactions(): void {
     try {
@@ -487,163 +1307,177 @@ class FirestoreConnectedRepository implements IRepository {
         saveItem(STORAGE_KEYS.EVALUATIONS, evals);
       }
 
-      // 2. Clean and consolidate transactions
-      const rawTransactions = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
-      let txModified = false;
-
-      // Group evaluation transactions by `${studentId}_${date}`
-      const evalMap = new Map<string, PointTransaction[]>();
-      const otherTxs: PointTransaction[] = [];
-
-      rawTransactions.forEach((tx) => {
-        // Fix wrong day name in transaction text if present
-        if (tx.reason?.includes('تقييم يوم الأحد (2026-10-29)')) {
-          tx.reason = tx.reason.replace('تقييم يوم الأحد (2026-10-29)', 'تقييم يوم الخميس (2026-10-29)');
-          txModified = true;
-        }
-
-        const isEval =
-          tx.idempotencyKey?.includes('daily_eval') ||
-          tx.id?.includes('eval') ||
-          tx.reason?.includes('تقييم') ||
-          tx.reason?.startsWith('تقييم يوم') ||
-          tx.reason?.startsWith('إلغاء وحذف تقييم يوم');
-
-        if (isEval && tx.studentId) {
-          let dateStr = tx.date;
-          if (!dateStr && tx.idempotencyKey) {
-            const m = tx.idempotencyKey.match(/\d{4}-\d{2}-\d{2}/);
-            if (m) dateStr = m[0];
-          }
-          if (!dateStr && tx.id) {
-            const m = tx.id.match(/\d{4}-\d{2}-\d{2}/);
-            if (m) dateStr = m[0];
-          }
-          if (!dateStr && tx.reason) {
-            const m = tx.reason.match(/\d{4}-\d{2}-\d{2}/);
-            if (m) dateStr = m[0];
-          }
-          if (dateStr) {
-            if (dateStr.includes('T')) dateStr = dateStr.split('T')[0];
-            const key = `${tx.studentId}_${dateStr}`;
-            const list = evalMap.get(key) || [];
-            list.push(tx);
-            evalMap.set(key, list);
-          } else {
-            // Orphan evaluation transaction with no identifiable date
-            txModified = true;
-          }
-        } else {
-          otherTxs.push(tx);
-        }
-      });
-
-      const consolidatedTxs: PointTransaction[] = [...otherTxs];
-
-      // Process evaluation transaction groups:
-      // An evaluation transaction is strictly valid ONLY if an active EvaluationRecord exists in `evals` with points > 0!
-      evalMap.forEach((list, groupKey) => {
-        const [sId, dKey] = groupKey.split('_');
-        const matchingEval = evals.find((e) => e.studentId === sId && e.date === dKey);
-
-        const evalScore = matchingEval
-          ? typeof matchingEval.totalPoints === 'number'
-            ? matchingEval.totalPoints
-            : matchingEval.pointsAwarded || 0
-          : 0;
-
-        // If no evaluation record exists in evals or points are 0, skip
-        if (!matchingEval || evalScore <= 0) {
-          txModified = true;
-          return;
-        }
-
-        // Matching evaluation exists with points > 0:
-        const accurateDay = matchingEval.dayName || getArabicDayName(dKey);
-        const att =
-          matchingEval.attendance === 'early'
-            ? 'مبكر (2ن)'
-            : matchingEval.attendance === 'late'
-            ? 'متأخر (1ن)'
-            : 'غائب (0ن)';
-        const cleanReason = `تقييم يوم ${accurateDay} (${dKey}): حضور ${att}، حفظ ${matchingEval.memorizationScore || 0}ن، مراجعة ${matchingEval.revisionScore || 0}ن، انضباط ${matchingEval.disciplineScore || 0}ن، زي ${matchingEval.uniformScore || 0}ن`;
-
-        const primaryTx = list[0];
-        if (list.length > 1) {
-          txModified = true;
-        }
-
-        const consolidatedTx: PointTransaction = {
-          id: primaryTx.id || `tx_eval_${sId}_${dKey}`,
-          studentId: sId,
-          studentName: matchingEval.studentName || primaryTx.studentName,
-          amount: evalScore,
-          type: 'memorization',
-          reason: cleanReason,
-          date: dKey,
-          createdBy: matchingEval.recordedBy || primaryTx.createdBy || 'المعلم',
-          createdByRole: 'teacher',
-          idempotencyKey: `daily_eval_${sId}_${dKey}`,
-        };
-
-        if (primaryTx.amount !== evalScore || primaryTx.reason !== cleanReason || list.length > 1) {
-          txModified = true;
-        }
-
-        consolidatedTxs.push(consolidatedTx);
-      });
-
-      // Ensure that all existing active evaluations in `evals` (with points > 0) have a corresponding transaction
-      evals.forEach((e) => {
-        if (!e.studentId || !e.date) return;
-        const pts = typeof e.totalPoints === 'number' ? e.totalPoints : e.pointsAwarded || 0;
-        if (pts <= 0) return;
-        const key = `${e.studentId}_${e.date}`;
-        if (!evalMap.has(key)) {
-          const accurateDay = e.dayName || getArabicDayName(e.date);
-          const att =
-            e.attendance === 'early' ? 'مبكر (2ن)' : e.attendance === 'late' ? 'متأخر (1ن)' : 'غائب (0ن)';
-          const cleanReason = `تقييم يوم ${accurateDay} (${e.date}): حضور ${att}، حفظ ${e.memorizationScore || 0}ن، مراجعة ${e.revisionScore || 0}ن، انضباط ${e.disciplineScore || 0}ن، زي ${e.uniformScore || 0}ن`;
-          const newTx: PointTransaction = {
-            id: `tx_eval_${e.studentId}_${e.date}`,
-            studentId: e.studentId,
-            studentName: e.studentName,
-            amount: pts,
-            type: 'memorization',
-            reason: cleanReason,
-            date: e.date,
-            createdBy: e.recordedBy || 'المعلم',
-            createdByRole: 'teacher',
-            idempotencyKey: `daily_eval_${e.studentId}_${e.date}`,
-          };
-          consolidatedTxs.push(newTx);
-          txModified = true;
-        }
-      });
-
-      if (txModified) {
-        saveItem(STORAGE_KEYS.TRANSACTIONS, consolidatedTxs);
+      // Teacher sessions do not subscribe to transactions — preserve Firestore student.currentPoints untouched
+      if (this.ledgerScope === 'none') {
+        return;
       }
 
-      // 3. Reconcile student balances with transactions ledger LOCALLY
-      const finalTxs = txModified ? consolidatedTxs : rawTransactions;
-      const students = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+      const rawTransactions = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
+      let txModified = false;
+      let finalTxs = rawTransactions;
 
-      const txPointsByStudent = new Map<string, number>();
-      finalTxs.forEach((tx) => {
-        if (tx.studentId && typeof tx.amount === 'number') {
-          const cur = txPointsByStudent.get(tx.studentId) || 0;
-          txPointsByStudent.set(tx.studentId, cur + tx.amount);
+      // Cross-check evaluation transactions against evaluations ONLY when evaluations are synced for this scope
+      if (this.hasEvaluationsScope) {
+        const scopedId = this.ledgerScope === 'student' ? this.scopedStudentId : null;
+        const evalMap = new Map<string, { studentId: string; date: string; txs: PointTransaction[] }>();
+        const otherTxs: PointTransaction[] = [];
+
+        rawTransactions.forEach((tx) => {
+          if (scopedId && tx.studentId !== scopedId) {
+            otherTxs.push(tx);
+            return;
+          }
+
+          if (tx.reason?.includes('تقييم يوم الأحد (2026-10-29)')) {
+            tx.reason = tx.reason.replace('تقييم يوم الأحد (2026-10-29)', 'تقييم يوم الخميس (2026-10-29)');
+            txModified = true;
+          }
+
+          const isNonEvalType =
+            tx.type === 'admin_bonus' ||
+            tx.type === 'admin_correction' ||
+            tx.type === 'reward_redemption' ||
+            tx.type === 'refund' ||
+            tx.type === 'attendance';
+
+          const isEval =
+            !isNonEvalType &&
+            (tx.idempotencyKey?.includes('daily_eval') ||
+              tx.id?.includes('eval') ||
+              tx.reason?.startsWith('تقييم يوم') ||
+              tx.reason?.startsWith('إلغاء وحذف تقييم يوم'));
+
+          if (isEval && tx.studentId) {
+            let dateStr = tx.date;
+            if (!dateStr && tx.idempotencyKey) {
+              const m = tx.idempotencyKey.match(/\d{4}-\d{2}-\d{2}/);
+              if (m) dateStr = m[0];
+            }
+            if (!dateStr && tx.id) {
+              const m = tx.id.match(/\d{4}-\d{2}-\d{2}/);
+              if (m) dateStr = m[0];
+            }
+            if (!dateStr && tx.reason) {
+              const m = tx.reason.match(/\d{4}-\d{2}-\d{2}/);
+              if (m) dateStr = m[0];
+            }
+            if (dateStr) {
+              if (dateStr.includes('T')) dateStr = dateStr.split('T')[0];
+              const key = `${tx.studentId}::${dateStr}`;
+              const entry = evalMap.get(key) || { studentId: tx.studentId, date: dateStr, txs: [] };
+              entry.txs.push(tx);
+              evalMap.set(key, entry);
+            } else {
+              txModified = true;
+            }
+          } else {
+            otherTxs.push(tx);
+          }
+        });
+
+        const consolidatedTxs: PointTransaction[] = [...otherTxs];
+
+        evalMap.forEach(({ studentId: sId, date: dKey, txs: list }) => {
+          const matchingEval = evals.find((e) => {
+            const eDate = e.date?.includes('T') ? e.date.split('T')[0] : e.date;
+            return e.studentId === sId && eDate === dKey;
+          });
+
+          const evalScore = matchingEval
+            ? typeof matchingEval.totalPoints === 'number'
+              ? matchingEval.totalPoints
+              : matchingEval.pointsAwarded || 0
+            : 0;
+
+          if (!matchingEval || evalScore <= 0) {
+            txModified = true;
+            return;
+          }
+
+          const accurateDay = matchingEval.dayName || getArabicDayName(dKey);
+          const att =
+            matchingEval.attendance === 'early'
+              ? 'مبكر (2ن)'
+              : matchingEval.attendance === 'late'
+              ? 'متأخر (1ن)'
+              : 'غائب (0ن)';
+          const cleanReason = `تقييم يوم ${accurateDay} (${dKey}): حضور ${att}، حفظ ${matchingEval.memorizationScore || 0}ن، مراجعة ${matchingEval.revisionScore || 0}ن، انضباط ${matchingEval.disciplineScore || 0}ن، زي ${matchingEval.uniformScore || 0}ن`;
+
+          const primaryTx = list[0];
+          if (list.length > 1) {
+            txModified = true;
+          }
+
+          const consolidatedTx: PointTransaction = {
+            id: primaryTx.id || `tx_eval_${sId}_${dKey}`,
+            studentId: sId,
+            studentName: matchingEval.studentName || primaryTx.studentName,
+            amount: evalScore,
+            type: 'memorization',
+            reason: cleanReason,
+            date: dKey,
+            createdBy: matchingEval.recordedBy || primaryTx.createdBy || 'المعلم',
+            createdByRole: 'teacher',
+            idempotencyKey: `daily_eval_${sId}_${dKey}`,
+          };
+
+          if (primaryTx.amount !== evalScore || primaryTx.reason !== cleanReason || list.length > 1) {
+            txModified = true;
+          }
+
+          consolidatedTxs.push(consolidatedTx);
+        });
+
+        const addedEvalKeys = new Set<string>();
+        evals.forEach((e) => {
+          if (!e.studentId || !e.date) return;
+          if (scopedId && e.studentId !== scopedId) return;
+          const eDate = e.date.includes('T') ? e.date.split('T')[0] : e.date;
+          const pts = typeof e.totalPoints === 'number' ? e.totalPoints : e.pointsAwarded || 0;
+          if (pts <= 0) return;
+          const key = `${e.studentId}::${eDate}`;
+          if (!evalMap.has(key) && !addedEvalKeys.has(key)) {
+            addedEvalKeys.add(key);
+            const accurateDay = e.dayName || getArabicDayName(eDate);
+            const att =
+              e.attendance === 'early' ? 'مبكر (2ن)' : e.attendance === 'late' ? 'متأخر (1ن)' : 'غائب (0ن)';
+            const cleanReason = `تقييم يوم ${accurateDay} (${eDate}): حضور ${att}، حفظ ${e.memorizationScore || 0}ن، مراجعة ${e.revisionScore || 0}ن، انضباط ${e.disciplineScore || 0}ن، زي ${e.uniformScore || 0}ن`;
+            const newTx: PointTransaction = {
+              id: `tx_eval_${e.studentId}_${eDate}`,
+              studentId: e.studentId,
+              studentName: e.studentName,
+              amount: pts,
+              type: 'memorization',
+              reason: cleanReason,
+              date: eDate,
+              createdBy: e.recordedBy || 'المعلم',
+              createdByRole: 'teacher',
+              idempotencyKey: `daily_eval_${e.studentId}_${eDate}`,
+            };
+            consolidatedTxs.push(newTx);
+            txModified = true;
+          }
+        });
+
+        if (txModified) {
+          saveItem(STORAGE_KEYS.TRANSACTIONS, consolidatedTxs);
         }
-      });
+        finalTxs = txModified ? consolidatedTxs : rawTransactions;
+      }
+
+      // 3. Reconcile student balances with transactions ledger LOCALLY (only for students in scope)
+      const students = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+      const txPointsByStudent = computeStudentBalancesMap(finalTxs);
 
       let modified = false;
       students.forEach((s) => {
-        const truePoints = Math.max(0, txPointsByStudent.get(s.id) || 0);
+        if (this.ledgerScope === 'student' && s.id !== this.scopedStudentId) {
+          return;
+        }
+        const truePoints = txPointsByStudent.get(s.id) || 0;
         if (s.currentPoints !== truePoints) {
           s.currentPoints = truePoints;
           modified = true;
-          // Local update only - no Firestore writes inside reconciliation
         }
       });
 
@@ -655,12 +1489,8 @@ class FirestoreConnectedRepository implements IRepository {
     }
   }
 
-  private initFirestoreRealtimeListeners() {
-    if (this.listenersInitialized) return;
-    this.listenersInitialized = true;
-
+  private initScopedFirestoreListeners(user: User) {
     try {
-      // Global snapshot sync listener to confirm Firestore caught up with remote server
       const unsubSync = onSnapshotsInSync(db, () => {
         updateSyncState({
           status: 'connected',
@@ -692,7 +1522,356 @@ class FirestoreConnectedRepository implements IRepository {
         });
       };
 
-      // 1. Sync Students from Firestore
+      const subscribeSupportTickets = (q: ReturnType<typeof query> | ReturnType<typeof collection>) => {
+        const unsub = onSnapshot(
+          q as any,
+          { includeMetadataChanges: false },
+          (snapshot: any) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: SupportTicket[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d: any) => {
+                const ticket = d.data() as SupportTicket;
+                if (ticket && ticket.id && !deletedDocIds.has(ticket.id)) {
+                  list.push(ticket);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('support_tickets')
+        );
+        this.unsubscribers.push(unsub);
+      };
+
+      const buildSenderIds = (u: User): string[] => {
+        const ids = new Set<string>();
+        if (u.id) ids.add(u.id);
+        if (u.studentId) {
+          ids.add(u.studentId);
+          ids.add(`user_${u.studentId}`);
+        }
+        return Array.from(ids).slice(0, 10);
+      };
+
+      if (user.role === 'student') {
+        const studentId = user.studentId || user.id;
+
+        // 1. Single student document listener (1 doc)
+        const unsubStudent = onSnapshot(
+          doc(db, 'students', studentId),
+          { includeMetadataChanges: false },
+          (docSnap) => {
+            if (docSnap.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(docSnap.metadata.fromCache);
+            if (docSnap.exists()) {
+              const s = docSnap.data() as Student;
+              if (s && s.id && !deletedDocIds.has(s.id)) {
+                const existing = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+                const idx = existing.findIndex((item) => item.id === s.id);
+                if (idx >= 0) {
+                  existing[idx] = s;
+                } else {
+                  existing.push(s);
+                }
+                saveItem(STORAGE_KEYS.STUDENTS, existing);
+                this.reconcileStudentPointsFromTransactions();
+                debouncedNotifySubscribers();
+              }
+            }
+          },
+          handleSnapshotError('students')
+        );
+        this.unsubscribers.push(unsubStudent);
+
+        // 2. Own evaluations only
+        const unsubEvals = onSnapshot(
+          query(collection(db, 'evaluations'), where('studentId', '==', studentId)),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: EvaluationRecord[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => {
+                const rec = d.data() as EvaluationRecord;
+                if (rec && rec.id && !deletedDocIds.has(rec.id)) {
+                  list.push(rec);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.EVALUATIONS, list);
+            this.reconcileStudentPointsFromTransactions();
+            this.reconcileStudentAttendance();
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('evaluations')
+        );
+        this.unsubscribers.push(unsubEvals);
+
+        // 3. Own transactions only
+        const unsubTx = onSnapshot(
+          query(collection(db, 'transactions'), where('studentId', '==', studentId)),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: PointTransaction[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => {
+                const tx = d.data() as PointTransaction;
+                if (tx && tx.id && !deletedDocIds.has(tx.id)) {
+                  list.push(tx);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.TRANSACTIONS, list);
+            this.reconcileStudentPointsFromTransactions();
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('transactions')
+        );
+        this.unsubscribers.push(unsubTx);
+
+        // 4. Own redemptions only
+        const unsubRedemptions = onSnapshot(
+          query(collection(db, 'redemptions'), where('studentId', '==', studentId)),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: RedemptionRequest[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => {
+                const req = d.data() as RedemptionRequest;
+                if (req && req.id && !deletedDocIds.has(req.id)) {
+                  list.push(req);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.REDEMPTIONS, list);
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('redemptions')
+        );
+        this.unsubscribers.push(unsubRedemptions);
+
+        // 5. Own support tickets only
+        const senderIds = buildSenderIds(user);
+        if (senderIds.length > 0) {
+          subscribeSupportTickets(
+            query(collection(db, 'support_tickets'), where('senderId', 'in', senderIds))
+          );
+        }
+        return;
+      }
+
+      if (user.role === 'teacher') {
+        const teacherCircleIds = this.getTeacherCircleIds(user).slice(0, 10);
+        const teacherCircleSet = new Set(teacherCircleIds);
+
+        const studentsQuery =
+          teacherCircleIds.length > 1
+            ? query(collection(db, 'students'), where('circleId', 'in', teacherCircleIds))
+            : query(collection(db, 'students'), where('circleId', '==', teacherCircleIds[0]));
+
+        const evalsQuery =
+          teacherCircleIds.length > 1
+            ? query(collection(db, 'evaluations'), where('circleId', 'in', teacherCircleIds))
+            : query(collection(db, 'evaluations'), where('circleId', '==', teacherCircleIds[0]));
+
+        // 1. Teacher's circle(s) students only
+        const unsubStudents = onSnapshot(
+          studentsQuery,
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            if (!snapshot.empty) {
+              const remoteCircleStudents: Student[] = [];
+              const remoteIds = new Set<string>();
+              snapshot.forEach((d) => {
+                const s = d.data() as Student;
+                if (s && s.id && !deletedDocIds.has(s.id)) {
+                  remoteCircleStudents.push(s);
+                  remoteIds.add(s.id);
+                }
+              });
+              const existing = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+              const otherCircleStudents = existing.filter(
+                (s) => !teacherCircleSet.has(normalizeCircleId(s.circleId)) && !remoteIds.has(s.id)
+              );
+              saveItem(STORAGE_KEYS.STUDENTS, [...otherCircleStudents, ...remoteCircleStudents]);
+              this.reconcileStudentAttendance();
+              this.recalculateCircleStudentCounts();
+              debouncedNotifySubscribers();
+            }
+          },
+          handleSnapshotError('students')
+        );
+        this.unsubscribers.push(unsubStudents);
+
+        // 2. Teacher's circle(s) evaluations only
+        const unsubEvals = onSnapshot(
+          evalsQuery,
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: EvaluationRecord[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => {
+                const rec = d.data() as EvaluationRecord;
+                if (rec && rec.id && !deletedDocIds.has(rec.id)) {
+                  list.push(rec);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.EVALUATIONS, list);
+            this.reconcileStudentAttendance();
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('evaluations')
+        );
+        this.unsubscribers.push(unsubEvals);
+
+        // 3. Own support tickets only
+        const senderIds = buildSenderIds(user);
+        if (senderIds.length > 0) {
+          subscribeSupportTickets(
+            query(collection(db, 'support_tickets'), where('senderId', 'in', senderIds))
+          );
+        }
+        return;
+      }
+
+      if (user.role === 'supervisor') {
+        // 1. All Students
+        const unsubStudents = onSnapshot(
+          collection(db, 'students'),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            if (!snapshot.empty) {
+              const list: Student[] = [];
+              snapshot.forEach((d) => {
+                const s = d.data() as Student;
+                if (s && s.id && !deletedDocIds.has(s.id)) {
+                  list.push(s);
+                }
+              });
+              saveItem(STORAGE_KEYS.STUDENTS, list);
+              this.reconcileStudentPointsFromTransactions();
+              this.reconcileStudentAttendance();
+              this.recalculateCircleStudentCounts();
+              debouncedNotifySubscribers();
+            }
+          },
+          handleSnapshotError('students')
+        );
+        this.unsubscribers.push(unsubStudents);
+
+        // 2. All Evaluations
+        const unsubEvals = onSnapshot(
+          collection(db, 'evaluations'),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: EvaluationRecord[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => {
+                const rec = d.data() as EvaluationRecord;
+                if (rec && rec.id && !deletedDocIds.has(rec.id)) {
+                  list.push(rec);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.EVALUATIONS, list);
+            this.reconcileStudentPointsFromTransactions();
+            this.reconcileStudentAttendance();
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('evaluations')
+        );
+        this.unsubscribers.push(unsubEvals);
+
+        // 3. All Transactions
+        const unsubTx = onSnapshot(
+          collection(db, 'transactions'),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: PointTransaction[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => {
+                const tx = d.data() as PointTransaction;
+                if (tx && tx.id && !deletedDocIds.has(tx.id)) {
+                  list.push(tx);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.TRANSACTIONS, list);
+            this.reconcileStudentPointsFromTransactions();
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('transactions')
+        );
+        this.unsubscribers.push(unsubTx);
+
+        // 4. All Redemptions
+        const unsubRedemptions = onSnapshot(
+          collection(db, 'redemptions'),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: RedemptionRequest[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => {
+                const req = d.data() as RedemptionRequest;
+                if (req && req.id && !deletedDocIds.has(req.id)) {
+                  list.push(req);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.REDEMPTIONS, list);
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('redemptions')
+        );
+        this.unsubscribers.push(unsubRedemptions);
+
+        // 5. All Exam Nominations
+        const unsubNominations = onSnapshot(
+          collection(db, 'exam_nominations'),
+          { includeMetadataChanges: false },
+          (snapshot) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: ExamNomination[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d) => list.push(d.data() as ExamNomination));
+            }
+            saveItem(STORAGE_KEYS.EXAM_NOMINATIONS, list);
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('exam_nominations')
+        );
+        this.unsubscribers.push(unsubNominations);
+
+        // 6. Supervisor Support Tickets only
+        subscribeSupportTickets(
+          query(collection(db, 'support_tickets'), where('senderRole', '==', 'supervisor'))
+        );
+        return;
+      }
+
+      // Admin (Tech Support): needs Students, Transactions, Support Tickets (no evaluations/redemptions/nominations)
       const unsubStudents = onSnapshot(
         collection(db, 'students'),
         { includeMetadataChanges: false },
@@ -708,6 +1887,7 @@ class FirestoreConnectedRepository implements IRepository {
               }
             });
             saveItem(STORAGE_KEYS.STUDENTS, list);
+            this.reconcileStudentPointsFromTransactions();
             this.recalculateCircleStudentCounts();
             debouncedNotifySubscribers();
           }
@@ -716,66 +1896,6 @@ class FirestoreConnectedRepository implements IRepository {
       );
       this.unsubscribers.push(unsubStudents);
 
-      // 2. Sync Circles from Firestore
-      const unsubCircles = onSnapshot(
-        collection(db, 'circles'),
-        { includeMetadataChanges: false },
-        (snapshot) => {
-          if (snapshot.metadata.hasPendingWrites) return;
-          recordSnapshotReceived(snapshot.metadata.fromCache);
-          if (!snapshot.empty) {
-            const list: Circle[] = [];
-            snapshot.forEach((d) => list.push(d.data() as Circle));
-            saveItem(STORAGE_KEYS.CIRCLES, list);
-            debouncedNotifySubscribers();
-          }
-        },
-        handleSnapshotError('circles')
-      );
-      this.unsubscribers.push(unsubCircles);
-
-      // 3. Sync Teachers from Firestore
-      const unsubTeachers = onSnapshot(
-        collection(db, 'teachers'),
-        { includeMetadataChanges: false },
-        (snapshot) => {
-          if (snapshot.metadata.hasPendingWrites) return;
-          recordSnapshotReceived(snapshot.metadata.fromCache);
-          if (!snapshot.empty) {
-            const list: Teacher[] = [];
-            snapshot.forEach((d) => list.push(d.data() as Teacher));
-            saveItem(STORAGE_KEYS.TEACHERS, list);
-            debouncedNotifySubscribers();
-          }
-        },
-        handleSnapshotError('teachers')
-      );
-      this.unsubscribers.push(unsubTeachers);
-
-      // 4. Sync Evaluations from Firestore
-      const unsubEvals = onSnapshot(
-        collection(db, 'evaluations'),
-        { includeMetadataChanges: false },
-        (snapshot) => {
-          if (snapshot.metadata.hasPendingWrites) return;
-          recordSnapshotReceived(snapshot.metadata.fromCache);
-          const list: EvaluationRecord[] = [];
-          if (!snapshot.empty) {
-            snapshot.forEach((d) => {
-              const rec = d.data() as EvaluationRecord;
-              if (rec && rec.id && !deletedDocIds.has(rec.id)) {
-                list.push(rec);
-              }
-            });
-          }
-          saveItem(STORAGE_KEYS.EVALUATIONS, list);
-          debouncedNotifySubscribers();
-        },
-        handleSnapshotError('evaluations')
-      );
-      this.unsubscribers.push(unsubEvals);
-
-      // 5. Sync Point Transactions from Firestore
       const unsubTx = onSnapshot(
         collection(db, 'transactions'),
         { includeMetadataChanges: false },
@@ -792,88 +1912,14 @@ class FirestoreConnectedRepository implements IRepository {
             });
           }
           saveItem(STORAGE_KEYS.TRANSACTIONS, list);
+          this.reconcileStudentPointsFromTransactions();
           debouncedNotifySubscribers();
         },
         handleSnapshotError('transactions')
       );
       this.unsubscribers.push(unsubTx);
 
-      // 6. Sync Rewards from Firestore
-      const unsubRewards = onSnapshot(
-        collection(db, 'rewards'),
-        { includeMetadataChanges: false },
-        (snapshot) => {
-          if (snapshot.metadata.hasPendingWrites) return;
-          recordSnapshotReceived(snapshot.metadata.fromCache);
-          if (!snapshot.empty) {
-            const list: Reward[] = [];
-            snapshot.forEach((d) => {
-              const r = d.data() as Reward;
-              if (r && r.id && !deletedDocIds.has(r.id)) {
-                list.push(r);
-              }
-            });
-            saveItem(STORAGE_KEYS.REWARDS, list);
-            debouncedNotifySubscribers();
-          }
-        },
-        handleSnapshotError('rewards')
-      );
-      this.unsubscribers.push(unsubRewards);
-
-      // 7. Sync Redemptions from Firestore
-      const unsubRedemptions = onSnapshot(
-        collection(db, 'redemptions'),
-        { includeMetadataChanges: false },
-        (snapshot) => {
-          if (snapshot.metadata.hasPendingWrites) return;
-          recordSnapshotReceived(snapshot.metadata.fromCache);
-          if (!snapshot.empty) {
-            const list: RedemptionRequest[] = [];
-            snapshot.forEach((d) => list.push(d.data() as RedemptionRequest));
-            saveItem(STORAGE_KEYS.REDEMPTIONS, list);
-            debouncedNotifySubscribers();
-          }
-        },
-        handleSnapshotError('redemptions')
-      );
-      this.unsubscribers.push(unsubRedemptions);
-
-      // 8. Sync Exam Nominations from Firestore
-      const unsubNominations = onSnapshot(
-        collection(db, 'exam_nominations'),
-        { includeMetadataChanges: false },
-        (snapshot) => {
-          if (snapshot.metadata.hasPendingWrites) return;
-          recordSnapshotReceived(snapshot.metadata.fromCache);
-          if (!snapshot.empty) {
-            const list: ExamNomination[] = [];
-            snapshot.forEach((d) => list.push(d.data() as ExamNomination));
-            saveItem(STORAGE_KEYS.EXAM_NOMINATIONS, list);
-            debouncedNotifySubscribers();
-          }
-        },
-        handleSnapshotError('exam_nominations')
-      );
-      this.unsubscribers.push(unsubNominations);
-
-      // 9. Sync Support Tickets from Firestore
-      const unsubTickets = onSnapshot(
-        collection(db, 'support_tickets'),
-        { includeMetadataChanges: false },
-        (snapshot) => {
-          if (snapshot.metadata.hasPendingWrites) return;
-          recordSnapshotReceived(snapshot.metadata.fromCache);
-          if (!snapshot.empty) {
-            const list: SupportTicket[] = [];
-            snapshot.forEach((d) => list.push(d.data() as SupportTicket));
-            saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
-            debouncedNotifySubscribers();
-          }
-        },
-        handleSnapshotError('support_tickets')
-      );
-      this.unsubscribers.push(unsubTickets);
+      subscribeSupportTickets(collection(db, 'support_tickets'));
     } catch (e) {
       console.warn('Firestore real-time listeners initialization skipped:', e);
     }
@@ -881,9 +1927,11 @@ class FirestoreConnectedRepository implements IRepository {
 
   // Students
   getStudents(): Student[] {
-    const loaded = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+    const deletedStudentIds = getPersistedDeletedStudentIds();
+    const rawLoaded = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+    const loaded = rawLoaded.filter((s) => !deletedStudentIds.has(s.id));
     // Remove student level if any legacy field remains and normalize circleId
-    let modified = false;
+    let modified = loaded.length !== rawLoaded.length;
     loaded.forEach((s) => {
       if (s.level) {
         delete s.level;
@@ -898,47 +1946,59 @@ class FirestoreConnectedRepository implements IRepository {
       }
     });
 
-    // Merge any INITIAL_STUDENTS not yet present in loaded
+    // Merge any INITIAL_STUDENTS not yet present in loaded (skip IDs explicitly deleted)
     const loadedIds = new Set(loaded.map((s) => s.id));
     INITIAL_STUDENTS.forEach((initialStudent) => {
-      if (!loadedIds.has(initialStudent.id)) {
+      if (
+        !loadedIds.has(initialStudent.id) &&
+        !deletedDocIds.has(initialStudent.id) &&
+        !deletedStudentIds.has(initialStudent.id)
+      ) {
         loaded.push(initialStudent);
         modified = true;
       }
     });
 
-    // Reconcile currentPoints against transactions ledger to guarantee consistency
-    const transactions = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
-    const txPointsByStudent = new Map<string, number>();
-    transactions.forEach((tx) => {
-      if (tx.studentId && typeof tx.amount === 'number') {
-        const cur = txPointsByStudent.get(tx.studentId) || 0;
-        txPointsByStudent.set(tx.studentId, cur + tx.amount);
-      }
-    });
+    // Reconcile currentPoints against transactions ledger ONLY when ledger is loaded for that student's scope
+    if (this.ledgerScope === 'all' || (this.ledgerScope === 'student' && this.scopedStudentId)) {
+      const transactions = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
+      const txPointsByStudent = computeStudentBalancesMap(transactions);
+      loaded.forEach((s) => {
+        if (this.ledgerScope === 'student' && s.id !== this.scopedStudentId) return;
+        if (txPointsByStudent.has(s.id)) {
+          const truePoints = txPointsByStudent.get(s.id)!;
+          if (s.currentPoints !== truePoints) {
+            s.currentPoints = truePoints;
+            modified = true;
+          }
+        }
+      });
+    }
 
-    loaded.forEach((s) => {
-      if (txPointsByStudent.has(s.id)) {
-        const truePoints = Math.max(0, txPointsByStudent.get(s.id)!);
-        if (s.currentPoints !== truePoints) {
-          s.currentPoints = truePoints;
+    // Reconcile attendance and streaks ONLY for students whose evaluation scope is actively loaded
+    if (this.hasEvaluationsScope) {
+      loaded.forEach((s) => {
+        const inEvalScope =
+          (this.ledgerScope === 'all' && !this.scopedCircleId && !this.scopedStudentId) ||
+          (this.scopedStudentId && s.id === this.scopedStudentId) ||
+          (this.scopedCircleIds.size > 0 && this.scopedCircleIds.has(normalizeCircleId(s.circleId))) ||
+          (this.scopedCircleId && normalizeCircleId(s.circleId) === this.scopedCircleId);
+
+        if (!inEvalScope) return;
+
+        const stats = this.getStudentAttendanceStats(s.id);
+        if (
+          s.attendanceRate !== stats.attendanceRate ||
+          s.streakDays !== stats.streakDays ||
+          s.consecutiveAbsences !== stats.consecutiveAbsences
+        ) {
+          s.attendanceRate = stats.attendanceRate;
+          s.streakDays = stats.streakDays;
+          s.consecutiveAbsences = stats.consecutiveAbsences;
           modified = true;
         }
-      }
-
-      // Reconcile attendance and streaks against evaluation/attendance records
-      const stats = this.getStudentAttendanceStats(s.id);
-      if (
-        s.attendanceRate !== stats.attendanceRate ||
-        s.streakDays !== stats.streakDays ||
-        s.consecutiveAbsences !== stats.consecutiveAbsences
-      ) {
-        s.attendanceRate = stats.attendanceRate;
-        s.streakDays = stats.streakDays;
-        s.consecutiveAbsences = stats.consecutiveAbsences;
-        modified = true;
-      }
-    });
+      });
+    }
 
     if (modified) {
       saveItem(STORAGE_KEYS.STUDENTS, loaded);
@@ -990,10 +2050,36 @@ class FirestoreConnectedRepository implements IRepository {
     const student = students.find((s) => s.id === id);
     if (!student) return { success: false, message: 'الطالب غير موجود' };
 
-    deletedDocIds.add(id);
+    const deletedIds = getPersistedDeletedStudentIds();
+    deletedIds.add(id);
+    savePersistedDeletedStudentIds(deletedIds);
+    void syncDeletedStudentsTombstonesToFirestore(deletedIds);
+
     const filtered = students.filter((s) => s.id !== id);
     saveItem(STORAGE_KEYS.STUDENTS, filtered);
     deleteFromFirestore('students', id);
+
+    // Purge student's related records locally and in Firestore
+    const filterByStudent = <T extends { id: string; studentId?: string }>(key: string) => {
+      const items = loadItem<T[]>(key, []);
+      const kept = items.filter((item) => {
+        if (item.studentId === id) {
+          deletedDocIds.add(item.id);
+          return false;
+        }
+        return true;
+      });
+      if (kept.length !== items.length) {
+        saveItem(key, kept);
+      }
+    };
+    filterByStudent<PointTransaction>(STORAGE_KEYS.TRANSACTIONS);
+    filterByStudent<EvaluationRecord>(STORAGE_KEYS.EVALUATIONS);
+    filterByStudent<AttendanceRecord>(STORAGE_KEYS.ATTENDANCE);
+    filterByStudent<RedemptionRequest>(STORAGE_KEYS.REDEMPTIONS);
+    filterByStudent<ExamNomination>(STORAGE_KEYS.EXAM_NOMINATIONS);
+    void cascadeDeleteStudentInFirestore(id);
+
     this.recalculateCircleStudentCounts();
 
     this.addAuditLog({
@@ -1001,13 +2087,13 @@ class FirestoreConnectedRepository implements IRepository {
       actorName: actor.name,
       actorRole: actor.role,
       action: 'حذف طالب',
-      details: `تم حذف الطالب ${student.name}`,
+      details: `تم حذف الطالب ${student.name} وجميع سجلاته المرتبطة نهائياً`,
       targetType: 'student',
       targetId: id,
     });
 
     notifySubscribers();
-    return { success: true, message: 'تم حذف الطالب بنجاح' };
+    return { success: true, message: 'تم حذف الطالب وسجلاته نهائياً بنجاح' };
   }
 
   toggleStudentActive(id: string, actor: { id: string; name: string; role: Role }): { success: boolean; active: boolean } {
@@ -1057,6 +2143,36 @@ class FirestoreConnectedRepository implements IRepository {
     return circles;
   }
 
+  getCirclesForTeacher(teacherId: string, fallbackCircleId?: string): Circle[] {
+    const allCircles = this.getCircles();
+    const matchedTeacher = this.getTeachers().find((t) => t.id === teacherId);
+    const orderedIds: string[] = [];
+    const seen = new Set<string>();
+
+    const addId = (raw?: string) => {
+      if (!raw) return;
+      const norm = normalizeCircleId(raw);
+      if (!seen.has(norm)) {
+        seen.add(norm);
+        orderedIds.push(norm);
+      }
+    };
+
+    matchedTeacher?.circleIds?.forEach(addId);
+    allCircles.filter((c) => c.teacherId === teacherId).forEach((c) => addId(c.id));
+
+    if (orderedIds.length === 0 && fallbackCircleId) {
+      addId(fallbackCircleId);
+    }
+
+    const result = orderedIds
+      .map((cid) => allCircles.find((c) => c.id === cid))
+      .filter((c): c is Circle => Boolean(c));
+
+    if (result.length > 0) return result;
+    return allCircles[0] ? [allCircles[0]] : [];
+  }
+
   getCircleById(id: string): Circle | undefined {
     return this.getCircles().find((c) => c.id === id);
   }
@@ -1070,6 +2186,7 @@ class FirestoreConnectedRepository implements IRepository {
       circles.push(circle);
     }
     saveItem(STORAGE_KEYS.CIRCLES, circles);
+    this.markStaticCacheFresh('circles');
     syncToFirestore('circles', circle);
 
     this.addAuditLog({
@@ -1104,6 +2221,18 @@ class FirestoreConnectedRepository implements IRepository {
           existing.id = initT.id;
           modified = true;
         }
+        const currentIds = Array.isArray(existing.circleIds) ? existing.circleIds : [];
+        const mergedIds = [...initT.circleIds];
+        currentIds.forEach((cid) => {
+          if (!mergedIds.includes(cid)) mergedIds.push(cid);
+        });
+        if (
+          mergedIds.length !== currentIds.length ||
+          mergedIds.some((cid, idx) => currentIds[idx] !== cid)
+        ) {
+          existing.circleIds = mergedIds;
+          modified = true;
+        }
       } else {
         teachers.push(initT);
         modified = true;
@@ -1124,6 +2253,7 @@ class FirestoreConnectedRepository implements IRepository {
       teachers.push(teacher);
     }
     saveItem(STORAGE_KEYS.TEACHERS, teachers);
+    this.markStaticCacheFresh('teachers');
     syncToFirestore('teachers', teacher);
 
     this.addAuditLog({
@@ -1144,6 +2274,7 @@ class FirestoreConnectedRepository implements IRepository {
     const teacher = teachers.find((t) => t.id === id);
     const filtered = teachers.filter((t) => t.id !== id);
     saveItem(STORAGE_KEYS.TEACHERS, filtered);
+    this.markStaticCacheFresh('teachers');
     deleteFromFirestore('teachers', id);
 
     this.addAuditLog({
@@ -1207,7 +2338,7 @@ class FirestoreConnectedRepository implements IRepository {
     }
 
     const newTx: PointTransaction = {
-      id: `tx_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      id: `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       studentId: student.id,
       studentName: student.name,
       amount: params.amount,
@@ -1292,7 +2423,7 @@ class FirestoreConnectedRepository implements IRepository {
       syncToFirestore('attendance', existing);
     } else {
       const record: AttendanceRecord = {
-        id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        id: `att_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         studentId: student.id,
         studentName: student.name,
         circleId: params.circleId,
@@ -1482,11 +2613,20 @@ class FirestoreConnectedRepository implements IRepository {
   }
 
   public reconcileStudentAttendance(): void {
+    if (!this.hasEvaluationsScope) return;
     try {
       const students = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
       let modified = false;
 
       students.forEach((s) => {
+        const inEvalScope =
+          (this.ledgerScope === 'all' && !this.scopedCircleId && !this.scopedStudentId) ||
+          (this.scopedStudentId && s.id === this.scopedStudentId) ||
+          (this.scopedCircleIds.size > 0 && this.scopedCircleIds.has(normalizeCircleId(s.circleId))) ||
+          (this.scopedCircleId && normalizeCircleId(s.circleId) === this.scopedCircleId);
+
+        if (!inEvalScope) return;
+
         const stats = this.getStudentAttendanceStats(s.id);
         if (
           s.attendanceRate !== stats.attendanceRate ||
@@ -1539,7 +2679,7 @@ class FirestoreConnectedRepository implements IRepository {
 
     const evals = loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, []);
     const evalRecord: EvaluationRecord = {
-      id: `eval_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `eval_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       studentId: student.id,
       studentName: student.name,
       circleId: params.circleId,
@@ -1667,6 +2807,12 @@ class FirestoreConnectedRepository implements IRepository {
 
     const evals = this.getEvaluationsList();
     const existingIndex = evals.findIndex((e) => e.studentId === params.studentId && e.date === params.date);
+    const oldEvalRecord = existingIndex >= 0 ? evals[existingIndex] : undefined;
+    const oldEvalPoints = oldEvalRecord
+      ? typeof oldEvalRecord.totalPoints === 'number'
+        ? oldEvalRecord.totalPoints
+        : oldEvalRecord.pointsAwarded || 0
+      : 0;
 
     let evalRecord: EvaluationRecord;
 
@@ -1693,7 +2839,7 @@ class FirestoreConnectedRepository implements IRepository {
       evals[existingIndex] = evalRecord;
     } else {
       evalRecord = {
-        id: `eval_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        id: `eval_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         studentId: student.id,
         studentName: student.name,
         circleId: params.circleId,
@@ -1719,33 +2865,42 @@ class FirestoreConnectedRepository implements IRepository {
     saveItem(STORAGE_KEYS.EVALUATIONS, evals);
     syncToFirestore('evaluations', evalRecord);
 
-    // Consolidate all evaluation transactions for this student and date into EXACTLY ONE transaction
+    // Consolidate all evaluation transactions for this student and date into EXACTLY ONE deterministic doc
+    const deterministicTxId = `tx_eval_${student.id}_${params.date}`;
     const transactions = this.getTransactions();
     const isThisDailyEvalTx = (t: PointTransaction) =>
       t.studentId === student.id &&
       (t.idempotencyKey === `daily_eval_${student.id}_${params.date}` ||
        t.idempotencyKey?.startsWith(`student_${student.id}:${params.date}:daily_eval`) ||
-       (t.date === params.date && (t.reason.startsWith('تقييم يوم') || t.reason.startsWith('إلغاء وحذف تقييم يوم'))));
+       (t.date === params.date && (t.reason?.startsWith('تقييم يوم') || t.reason?.startsWith('إلغاء وحذف تقييم يوم'))));
 
     const oldEvalTxs = transactions.filter(isThisDailyEvalTx);
-    const oldRecordedPoints = oldEvalTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const oldRecordedPoints =
+      this.ledgerScope === 'none'
+        ? oldEvalPoints
+        : oldEvalTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
     const netPointsDelta = totalPoints - oldRecordedPoints;
 
     const attendanceLabel =
       params.attendance === 'early' ? 'مبكر (2ن)' : params.attendance === 'late' ? 'متأخر (1ن)' : params.attendance === 'absent' ? 'غائب (0ن)' : 'لم يُرصد';
     const cleanReason = `تقييم يوم ${accurateDayName} (${params.date}): حضور ${attendanceLabel}، حفظ ${params.memorizationScore ?? '-'}ن، مراجعة ${params.revisionScore ?? '-'}ن، انضباط ${params.disciplineScore ?? '-'}ن، زي ${params.uniformScore ?? '-'}ن`;
 
-    // Filter out old evaluation transactions to replace them with 1 clean consolidated transaction
     const remainingTxs = transactions.filter((t) => !isThisDailyEvalTx(t));
+    const consolidatedTxId = oldEvalTxs[0]?.id || deterministicTxId;
 
-    // Delete old intermediate transactions from Firestore
+    // Delete superseded transactions or deleted 0-point deterministic transaction
     oldEvalTxs.forEach((t) => {
-      deleteFromFirestore('transactions', t.id);
+      if (totalPoints <= 0 || t.id !== consolidatedTxId) {
+        deleteFromFirestore('transactions', t.id);
+      }
     });
+    if (totalPoints <= 0) {
+      deleteFromFirestore('transactions', deterministicTxId);
+    }
 
     if (totalPoints > 0) {
       const consolidatedTx: PointTransaction = {
-        id: oldEvalTxs[0]?.id || `tx_eval_${student.id}_${params.date}`,
+        id: consolidatedTxId,
         studentId: student.id,
         studentName: student.name,
         amount: totalPoints,
@@ -1762,34 +2917,51 @@ class FirestoreConnectedRepository implements IRepository {
 
     saveItem(STORAGE_KEYS.TRANSACTIONS, remainingTxs);
 
-    // Calculate new current points for student directly from ledger
-    const studentTotalPoints = remainingTxs
-      .filter((t) => t.studentId === student.id && typeof t.amount === 'number')
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const freshStudents = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
-    const sIdx = freshStudents.findIndex((s) => s.id === params.studentId);
-    if (sIdx >= 0) {
-      freshStudents[sIdx].currentPoints = Math.max(0, studentTotalPoints);
-      if (params.attendance !== 'absent' && params.attendance) {
-        freshStudents[sIdx].streakDays = (freshStudents[sIdx].streakDays || 0) + 1;
-        freshStudents[sIdx].consecutiveAbsences = 0;
-      } else if (params.attendance === 'absent') {
-        freshStudents[sIdx].streakDays = 0;
-        freshStudents[sIdx].consecutiveAbsences = (freshStudents[sIdx].consecutiveAbsences || 0) + 1;
-        if (freshStudents[sIdx].consecutiveAbsences >= 3) {
-          freshStudents[sIdx].attentionReason = `غياب متكرر (${freshStudents[sIdx].consecutiveAbsences} أيام متتالية)`;
-        }
-      }
-      freshStudents[sIdx].daysWithoutLog = 0;
-      freshStudents[sIdx].lastActivityDate = params.date;
-      const stats = this.getStudentAttendanceStats(freshStudents[sIdx].id);
-      freshStudents[sIdx].attendanceRate = stats.attendanceRate;
-      saveItem(STORAGE_KEYS.STUDENTS, freshStudents);
-      syncToFirestore('students', freshStudents[sIdx]);
+    // Compute exact balance using ledger when loaded, or accurate delta when Teacher skips loading full ledger
+    let studentTotalPoints: number;
+    if (this.ledgerScope === 'all' || (this.ledgerScope === 'student' && student.id === this.scopedStudentId)) {
+      this.reconcileStudentPointsFromTransactions();
+      const reconciledBalances = computeStudentBalancesMap(
+        loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS)
+      );
+      studentTotalPoints = reconciledBalances.get(student.id) || 0;
+    } else {
+      studentTotalPoints = Math.max(0, (student.currentPoints || 0) + (totalPoints - oldEvalPoints));
     }
 
-    this.reconcileStudentPointsFromTransactions();
+    const freshStudents = this.getStudents();
+    const sIdx = freshStudents.findIndex((s) => s.id === params.studentId);
+    if (sIdx >= 0) {
+      const currentTarget = freshStudents[sIdx];
+      const stats = this.getStudentAttendanceStats(currentTarget.id);
+      const nextAttentionReason =
+        params.attendance === 'absent' && stats.consecutiveAbsences >= 3
+          ? `غياب متكرر (${stats.consecutiveAbsences} أيام متتالية)`
+          : currentTarget.attentionReason;
+
+      const studentDocChanged =
+        currentTarget.currentPoints !== studentTotalPoints ||
+        currentTarget.attendanceRate !== stats.attendanceRate ||
+        currentTarget.streakDays !== stats.streakDays ||
+        currentTarget.consecutiveAbsences !== stats.consecutiveAbsences ||
+        currentTarget.daysWithoutLog !== 0 ||
+        currentTarget.lastActivityDate !== params.date ||
+        currentTarget.attentionReason !== nextAttentionReason;
+
+      currentTarget.currentPoints = studentTotalPoints;
+      currentTarget.daysWithoutLog = 0;
+      currentTarget.lastActivityDate = params.date;
+      currentTarget.attendanceRate = stats.attendanceRate;
+      currentTarget.streakDays = stats.streakDays;
+      currentTarget.consecutiveAbsences = stats.consecutiveAbsences;
+      currentTarget.attentionReason = nextAttentionReason;
+
+      saveItem(STORAGE_KEYS.STUDENTS, freshStudents);
+      if (studentDocChanged) {
+        syncToFirestore('students', currentTarget);
+      }
+    }
+
     notifySubscribers();
     return {
       success: true,
@@ -1808,6 +2980,12 @@ class FirestoreConnectedRepository implements IRepository {
     const toDelete = evals.filter((e) => e.studentId === params.studentId && e.date === params.date);
     const remainingEvals = evals.filter((e) => !(e.studentId === params.studentId && e.date === params.date));
     const old = toDelete[0];
+    const oldEvalPoints = old
+      ? typeof old.totalPoints === 'number'
+        ? old.totalPoints
+        : old.pointsAwarded || 0
+      : 0;
+
     if (toDelete.length > 0) {
       saveItem(STORAGE_KEYS.EVALUATIONS, remainingEvals);
       toDelete.forEach((oldRec) => {
@@ -1817,6 +2995,7 @@ class FirestoreConnectedRepository implements IRepository {
     }
 
     // Cleanly remove any evaluation transactions for this date and deduct points
+    const deterministicTxId = `tx_eval_${params.studentId}_${params.date}`;
     const transactions = this.getTransactions();
     const isThisDailyEvalTx = (t: PointTransaction) =>
       t.studentId === params.studentId &&
@@ -1830,24 +3009,42 @@ class FirestoreConnectedRepository implements IRepository {
       deleteFromFirestore('transactions', t.id);
       deletedDocIds.add(t.id);
     });
+    // Ensure deterministic Firestore transaction doc is deleted even when Teacher did not load full transactions
+    deleteFromFirestore('transactions', deterministicTxId);
+    deletedDocIds.add(deterministicTxId);
     saveItem(STORAGE_KEYS.TRANSACTIONS, remainingTxs);
-
-    // Calculate new current points for student directly from ledger
-    const studentTotalPoints = remainingTxs
-      .filter((t) => t.studentId === params.studentId && typeof t.amount === 'number')
-      .reduce((sum, t) => sum + t.amount, 0);
 
     const freshStudents = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
     const sIdx = freshStudents.findIndex((s) => s.id === params.studentId);
     if (sIdx >= 0) {
-      freshStudents[sIdx].currentPoints = Math.max(0, studentTotalPoints);
+      let studentTotalPoints: number;
+      if (this.ledgerScope === 'all' || (this.ledgerScope === 'student' && params.studentId === this.scopedStudentId)) {
+        this.reconcileStudentPointsFromTransactions();
+        const reconciledBalances = computeStudentBalancesMap(
+          loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS)
+        );
+        studentTotalPoints = reconciledBalances.get(params.studentId) || 0;
+      } else {
+        studentTotalPoints = Math.max(0, (freshStudents[sIdx].currentPoints || 0) - oldEvalPoints);
+      }
+
       const stats = this.getStudentAttendanceStats(freshStudents[sIdx].id);
+      const studentDocChanged =
+        freshStudents[sIdx].currentPoints !== studentTotalPoints ||
+        freshStudents[sIdx].attendanceRate !== stats.attendanceRate ||
+        freshStudents[sIdx].streakDays !== stats.streakDays ||
+        freshStudents[sIdx].consecutiveAbsences !== stats.consecutiveAbsences;
+
+      freshStudents[sIdx].currentPoints = studentTotalPoints;
       freshStudents[sIdx].attendanceRate = stats.attendanceRate;
+      freshStudents[sIdx].streakDays = stats.streakDays;
+      freshStudents[sIdx].consecutiveAbsences = stats.consecutiveAbsences;
       saveItem(STORAGE_KEYS.STUDENTS, freshStudents);
-      syncToFirestore('students', freshStudents[sIdx]);
+      if (studentDocChanged) {
+        syncToFirestore('students', freshStudents[sIdx]);
+      }
     }
 
-    this.reconcileStudentPointsFromTransactions();
     notifySubscribers();
     return { success: true, message: 'تم إلغاء التقييم ومزامنة النقاط بنجاح', deletedRecord: old };
   }
@@ -1857,14 +3054,22 @@ class FirestoreConnectedRepository implements IRepository {
     return evals.find((e) => e.studentId === studentId && e.date === date);
   }
 
-  getEvaluationsForCircleAndDate(circleId: string, date: string): EvaluationRecord[] {
+  getEvaluationsForCircleAndDate(circleId: string | string[], date: string): EvaluationRecord[] {
     const evals = this.getEvaluationsList();
+    if (Array.isArray(circleId)) {
+      const circleSet = new Set(circleId);
+      return evals.filter((e) => circleSet.has(e.circleId) && e.date === date);
+    }
     return evals.filter((e) => e.circleId === circleId && e.date === date);
   }
 
-  getEvaluationsForCircleAndWeek(circleId: string, weekDates: string[]): EvaluationRecord[] {
+  getEvaluationsForCircleAndWeek(circleId: string | string[], weekDates: string[]): EvaluationRecord[] {
     const evals = this.getEvaluationsList();
     const datesSet = new Set(weekDates);
+    if (Array.isArray(circleId)) {
+      const circleSet = new Set(circleId);
+      return evals.filter((e) => circleSet.has(e.circleId) && datesSet.has(e.date));
+    }
     return evals.filter((e) => e.circleId === circleId && datesSet.has(e.date));
   }
 
@@ -1887,6 +3092,7 @@ class FirestoreConnectedRepository implements IRepository {
       rewards[idx] = reward;
     }
     saveItem(STORAGE_KEYS.REWARDS, rewards);
+    this.markStaticCacheFresh('rewards');
     syncToFirestore('rewards', reward);
 
     this.addAuditLog({
@@ -1908,6 +3114,7 @@ class FirestoreConnectedRepository implements IRepository {
     deletedDocIds.add(id);
     const filtered = rewards.filter((r) => r.id !== id);
     saveItem(STORAGE_KEYS.REWARDS, filtered);
+    this.markStaticCacheFresh('rewards');
     deleteFromFirestore('rewards', id);
 
     this.addAuditLog({
@@ -1930,6 +3137,7 @@ class FirestoreConnectedRepository implements IRepository {
 
     reward.available = !reward.available;
     saveItem(STORAGE_KEYS.REWARDS, rewards);
+    this.markStaticCacheFresh('rewards');
     syncToFirestore('rewards', reward);
 
     this.addAuditLog({
@@ -1994,11 +3202,12 @@ class FirestoreConnectedRepository implements IRepository {
 
     reward.remainingQuantity = Math.max(0, reward.remainingQuantity - 1);
     saveItem(STORAGE_KEYS.REWARDS, rewards);
+    this.markStaticCacheFresh('rewards');
     syncToFirestore('rewards', reward);
 
     const circle = this.getCircleById(student.circleId);
     const request: RedemptionRequest = {
-      id: `req_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `req_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       studentId: student.id,
       studentName: student.name,
       circleName: circle?.name || 'حلقة القرآن',
@@ -2061,6 +3270,7 @@ class FirestoreConnectedRepository implements IRepository {
         if (rIdx >= 0) {
           rewards[rIdx].remainingQuantity += 1;
           saveItem(STORAGE_KEYS.REWARDS, rewards);
+          this.markStaticCacheFresh('rewards');
           syncToFirestore('rewards', rewards[rIdx]);
         }
       }
@@ -2070,11 +3280,22 @@ class FirestoreConnectedRepository implements IRepository {
     saveItem(STORAGE_KEYS.REDEMPTIONS, requests);
     syncToFirestore('redemptions', req);
 
+    const statusArabicLabel =
+      params.status === 'approved'
+        ? 'جاري تجهيز الطلب'
+        : params.status === 'ready'
+        ? 'جاهز للاستلام'
+        : params.status === 'delivered'
+        ? 'تم التسليم'
+        : params.status === 'rejected'
+        ? 'مرفوض'
+        : 'بانتظار الموافقة';
+
     this.addAuditLog({
       actorId: params.handledBy,
       actorName: params.handledBy,
       actorRole: 'supervisor',
-      action: `تحديث طلب استرداد إلى (${params.status === 'approved' ? 'مقبول' : params.status === 'delivered' ? 'تم التسليم' : 'مرفوض'})`,
+      action: `تحديث طلب استرداد إلى (${statusArabicLabel})`,
       details: `طلب ${req.rewardTitle} للطالب ${req.studentName} [${req.rewardCost} نقطة]${req.refunded ? ' - تمت إعادة النقاط' : ''}`,
       targetType: 'redemption',
       targetId: req.id,
@@ -2083,7 +3304,7 @@ class FirestoreConnectedRepository implements IRepository {
     notifySubscribers();
     return {
       success: true,
-      message: `تم تحديث حالة الطلب إلى "${params.status === 'approved' ? 'تمت الموافقة' : params.status === 'delivered' ? 'تم التسليم' : 'مرفوض'}" بنجاح.`,
+      message: `تم تحديث حالة الطلب إلى "${statusArabicLabel}" بنجاح.`,
     };
   }
 
@@ -2167,7 +3388,7 @@ class FirestoreConnectedRepository implements IRepository {
 
     nominations.forEach((item) => {
       const newNomination: ExamNomination = {
-        id: `exam_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        id: `exam_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         studentId: item.studentId,
         studentName: item.studentName,
         circleId: item.circleId,
@@ -2296,7 +3517,7 @@ class FirestoreConnectedRepository implements IRepository {
       actorName: actor.name,
       actorRole: actor.role,
       action: 'تعديل قواعد النقاط',
-      details: `حضور: ${rules.attendance}ن، حفظ كامل: ${rules.memorizationFull}ن، مراجعة: ${rules.revisionFull}ن`,
+      details: `حضور مبكر: ${rules.attendanceEarly ?? 2}ن، حفظ: ${rules.memorizationMax ?? 2}ن، مراجعة: ${rules.revisionMax ?? 2}ن، انضباط: ${rules.disciplineMax ?? 2}ن، زي: ${rules.uniformMax ?? 2}ن`,
       targetType: 'settings',
     });
 
@@ -2312,7 +3533,7 @@ class FirestoreConnectedRepository implements IRepository {
     const logs = this.getAuditLogs();
     const newLog: AuditLog = {
       ...log,
-      id: `audit_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `audit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: new Date().toISOString(),
     };
     logs.unshift(newLog);
@@ -2406,6 +3627,33 @@ class FirestoreConnectedRepository implements IRepository {
     return list;
   }
 
+  getSupportTicketsForUser(user: User): SupportTicket[] {
+    const all = this.getSupportTickets();
+    const cleanEmail = user.email?.trim().toLowerCase() || '';
+    const candidateIds = new Set<string>();
+    if (user.id) candidateIds.add(user.id);
+    if (user.studentId) {
+      candidateIds.add(user.studentId);
+      candidateIds.add(`user_${user.studentId}`);
+    }
+
+    return all
+      .filter((t) => {
+        if (user.role === 'supervisor' && t.senderRole === 'supervisor') return true;
+        if (t.senderId && candidateIds.has(t.senderId)) return true;
+        if (cleanEmail && t.senderEmail && t.senderEmail.trim().toLowerCase() === cleanEmail) return true;
+        return false;
+      })
+      .sort((a, b) => {
+        if (Boolean(b.unreadByUser) !== Boolean(a.unreadByUser)) {
+          return b.unreadByUser ? 1 : -1;
+        }
+        const timeA = new Date(a.adminReplyAt || a.createdAt).getTime();
+        const timeB = new Date(b.adminReplyAt || b.createdAt).getTime();
+        return timeB - timeA;
+      });
+  }
+
   createSupportTicket(params: Omit<SupportTicket, 'id' | 'createdAt' | 'status' | 'priority'> & { priority?: SupportTicketPriority }): {
     success: boolean;
     message: string;
@@ -2430,9 +3678,11 @@ class FirestoreConnectedRepository implements IRepository {
     const newTicket: SupportTicket = {
       ...params,
       priority: calculatedPriority,
-      id: `ticket_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `ticket_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       createdAt: new Date().toISOString(),
       status: 'new',
+      replies: [],
+      unreadByUser: false,
     };
     list.unshift(newTicket);
     saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
@@ -2471,14 +3721,212 @@ class FirestoreConnectedRepository implements IRepository {
     return { success: true, message: 'تم تحديث التذكرة بنجاح' };
   }
 
-  deleteSupportTicket(ticketId: string): { success: boolean; message: string } {
+  replyToSupportTicket(params: {
+    ticketId: string;
+    message: string;
+    senderName: string;
+    senderRole: Role;
+    markResolved?: boolean;
+  }): { success: boolean; message: string; ticket?: SupportTicket } {
+    const cleanMsg = params.message.trim();
+    if (!cleanMsg) {
+      return { success: false, message: 'الرجاء كتابة نص الرد أولاً' };
+    }
+
+    const list = this.getSupportTickets();
+    const idx = list.findIndex((t) => t.id === params.ticketId);
+    if (idx === -1) return { success: false, message: 'التذكرة غير موجودة' };
+
+    const existing = list[idx];
+    const nowIso = new Date().toISOString();
+    const existingReplies: SupportTicketReply[] = Array.isArray(existing.replies) ? [...existing.replies] : [];
+
+    const isSupportReply = params.senderRole === 'admin';
+    const resolvedSenderName = isSupportReply ? 'الدعم الفني' : params.senderName;
+
+    // Preserve legacy adminReply if replies array was empty
+    if (existingReplies.length === 0 && existing.adminReply) {
+      existingReplies.push({
+        id: `reply_legacy_${existing.id}`,
+        message: existing.adminReply,
+        senderName: 'الدعم الفني',
+        senderRole: 'admin',
+        createdAt: existing.adminReplyAt || existing.createdAt,
+      });
+    }
+
+    const newReply: SupportTicketReply = {
+      id: `reply_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      message: cleanMsg,
+      senderName: resolvedSenderName,
+      senderRole: params.senderRole,
+      createdAt: nowIso,
+    };
+    existingReplies.push(newReply);
+
+    const nextStatus: SupportTicket['status'] = isSupportReply
+      ? params.markResolved
+        ? 'resolved'
+        : existing.status === 'new'
+        ? 'in_progress'
+        : existing.status
+      : existing.status === 'resolved'
+      ? 'in_progress'
+      : existing.status;
+
+    const updatedTicket: SupportTicket = {
+      ...existing,
+      replies: existingReplies,
+      status: nextStatus,
+      ...(isSupportReply
+        ? {
+            adminReply: cleanMsg,
+            adminReplyAt: nowIso,
+            adminReplyBy: 'الدعم الفني',
+            unreadByUser: true,
+          }
+        : {
+            unreadByUser: false,
+          }),
+    };
+
+    list[idx] = updatedTicket;
+    saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
+    syncToFirestore('support_tickets', updatedTicket);
+
+    if (isSupportReply) {
+      this.addAuditLog({
+        actorId: params.senderName,
+        actorName: params.senderName,
+        actorRole: 'admin',
+        action: 'الرد على تذكرة دعم فني',
+        details: `رد على تذكرة ${existing.senderName}: ${cleanMsg.slice(0, 60)}${cleanMsg.length > 60 ? '...' : ''}`,
+        targetType: 'settings',
+        targetId: existing.id,
+      });
+    }
+
+    notifySubscribers();
+    return {
+      success: true,
+      message: isSupportReply ? 'تم إرسال الرد لصندوق وارد المرسل بنجاح' : 'تم إرسال ردك للدعم الفني بنجاح',
+      ticket: updatedTicket,
+    };
+  }
+
+  markSupportTicketAsRead(ticketId: string): { success: boolean } {
+    const list = this.getSupportTickets();
+    const idx = list.findIndex((t) => t.id === ticketId);
+    if (idx === -1) return { success: false };
+    if (!list[idx].unreadByUser) return { success: true };
+
+    list[idx] = {
+      ...list[idx],
+      unreadByUser: false,
+      userLastReadAt: new Date().toISOString(),
+    };
+    saveItem(STORAGE_KEYS.SUPPORT_TICKETS, list);
+    syncToFirestore('support_tickets', list[idx]);
+    notifySubscribers();
+    return { success: true };
+  }
+
+  async closeSupportTicket(ticketId: string): Promise<{ success: boolean; message: string }> {
+    if (!ticketId) {
+      return { success: false, message: 'معرّف التذكرة غير صالح' };
+    }
+
+    const ticketPath = `support_tickets/${ticketId}`;
+    deletedDocIds.add(ticketId);
+    syncedHashes.delete(`support_tickets_${ticketId}`);
+
+    // Remove from local support tickets immediately
     const list = this.getSupportTickets();
     const filtered = list.filter((t) => t.id !== ticketId);
     saveItem(STORAGE_KEYS.SUPPORT_TICKETS, filtered);
-    deleteFromFirestore('support_tickets', ticketId);
-    deletedDocIds.add(ticketId);
+
+    // Remove any local audit logs linked to this ticket so no trace remains
+    const logs = this.getAuditLogs();
+    const removedLogIds = new Set<string>();
+    const remainingLogs = logs.filter((l) => {
+      if (l.targetId === ticketId) {
+        removedLogIds.add(l.id);
+        deletedDocIds.add(l.id);
+        syncedHashes.delete(`audit_logs_${l.id}`);
+        return false;
+      }
+      return true;
+    });
+    if (removedLogIds.size > 0) {
+      saveItem(STORAGE_KEYS.AUDIT_LOGS, remainingLogs);
+    }
+
     notifySubscribers();
-    return { success: true, message: 'تم حذف التذكرة بنجاح' };
+
+    updateSyncState({
+      status: 'syncing',
+      pendingWritesCount: currentSyncStatus.pendingWritesCount + 1,
+    });
+
+    try {
+      // Permanently delete the support ticket document (and its embedded replies) from Firestore
+      await deleteDoc(doc(db, 'support_tickets', ticketId));
+
+      // Purge any server-side audit logs referencing this ticketId to free space completely
+      try {
+        const auditSnap = await getDocs(
+          query(collection(db, 'audit_logs'), where('targetId', '==', ticketId))
+        );
+        const serverDeletePromises: Promise<void>[] = [];
+        auditSnap.forEach((d) => {
+          deletedDocIds.add(d.id);
+          syncedHashes.delete(`audit_logs_${d.id}`);
+          serverDeletePromises.push(deleteDoc(d.ref));
+        });
+        removedLogIds.forEach((logId) => {
+          if (!auditSnap.docs.some((d) => d.id === logId)) {
+            serverDeletePromises.push(deleteDoc(doc(db, 'audit_logs', logId)));
+          }
+        });
+        if (serverDeletePromises.length > 0) {
+          await Promise.all(serverDeletePromises);
+        }
+      } catch (auditErr: any) {
+        console.warn('Linked audit log cleanup notice:', auditErr?.message || auditErr);
+      }
+
+      updateSyncState({
+        status: 'connected',
+        lastUpdated: new Date(),
+        pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+        errorMessage: undefined,
+      });
+
+      notifySubscribers();
+      return {
+        success: true,
+        message: 'تم إغلاق التذكرة وحذفها نهائياً من السجلات والخادم',
+      };
+    } catch (err: any) {
+      updateSyncState({
+        status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error',
+        errorMessage: err?.message,
+        pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+      });
+
+      if (err?.code === 'permission-denied') {
+        handleFirestoreError(err, OperationType.DELETE, ticketPath);
+      }
+
+      return {
+        success: false,
+        message: 'تعذر حذف التذكرة من الخادم، تحقق من الاتصال وحاول مجدداً',
+      };
+    }
+  }
+
+  deleteSupportTicket(ticketId: string): Promise<{ success: boolean; message: string }> {
+    return this.closeSupportTicket(ticketId);
   }
 
   resetToDefaults(): void {

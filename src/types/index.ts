@@ -101,7 +101,7 @@ export interface Reward {
   expiresAt?: string;
 }
 
-export type RedemptionStatus = 'pending' | 'approved' | 'delivered' | 'rejected';
+export type RedemptionStatus = 'pending' | 'approved' | 'ready' | 'delivered' | 'rejected';
 
 export interface RedemptionRequest {
   id: string;
@@ -272,6 +272,14 @@ export interface ExamNomination {
 export type SupportTicketType = 'مشكلة' | 'اقتراح' | 'استفسار' | 'أخرى..';
 export type SupportTicketPriority = 'high' | 'medium' | 'low';
 
+export interface SupportTicketReply {
+  id: string;
+  message: string;
+  senderName: string;
+  senderRole: Role;
+  createdAt: string; // ISO string
+}
+
 export interface SupportTicket {
   id: string;
   ticketType: SupportTicketType;
@@ -284,5 +292,11 @@ export interface SupportTicket {
   senderId?: string;
   createdAt: string; // ISO string
   status: 'new' | 'in_progress' | 'resolved';
+  adminReply?: string;
+  adminReplyAt?: string;
+  adminReplyBy?: string;
+  replies?: SupportTicketReply[];
+  unreadByUser?: boolean;
+  userLastReadAt?: string;
 }
 

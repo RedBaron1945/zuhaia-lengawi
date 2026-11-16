@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
-import { X, Award, BookOpen, RotateCcw, ThumbsUp } from 'lucide-react';
+import { X, BookOpen, RotateCcw, ThumbsUp } from 'lucide-react';
 
 interface EvaluationModalProps {
   isOpen: boolean;

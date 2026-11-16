@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuth } from '../../context/AuthContext';
 import { repository } from '../../services/storageService';
 import { SupportTicketType, SupportTicketPriority } from '../../types';
@@ -7,7 +8,7 @@ import {
   X,
   Send,
   CheckCircle2,
-  MessageCircle,
+  Inbox,
   HelpCircle,
   User,
   AlertCircle,
@@ -29,7 +30,16 @@ export const SupportTicketModal: React.FC<SupportTicketModalProps> = ({ isOpen, 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (!isOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [isOpen]);
+
+  if (!isOpen || typeof document === 'undefined') return null;
 
   // Automatic Priority Classification:
   // أولوية عالية: مدير المجمع (supervisor) أو المعلمين (teacher) أو الإدارة (admin)
@@ -119,12 +129,16 @@ export const SupportTicketModal: React.FC<SupportTicketModalProps> = ({ isOpen, 
     onClose();
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in select-none">
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in select-none"
+      onClick={handleResetAndClose}
+    >
       <div
-        className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-right flex flex-col max-h-[92vh] animate-scale-up"
+        className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-right flex flex-col max-h-[90dvh] animate-scale-up"
         role="dialog"
         aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header Strip */}
         <div className="bg-gradient-to-r from-teal-800 via-teal-700 to-emerald-800 text-white p-4 sm:p-5 flex items-center justify-between relative shrink-0">
@@ -161,15 +175,19 @@ export const SupportTicketModal: React.FC<SupportTicketModalProps> = ({ isOpen, 
 
               <div className="space-y-2">
                 <h4 className="text-base sm:text-lg font-black text-slate-900">
-                  شكرًا! تم إرسال طلبك لمسؤول قسم تقنية المعلومات
+                  شكرًا لك، تم إرسال التذكرة
                 </h4>
                 <div className="p-3 bg-emerald-50 rounded-2xl border border-emerald-200/80 text-emerald-900 text-xs sm:text-sm font-bold leading-relaxed flex items-center gap-2 justify-center">
-                  <MessageCircle className="w-5 h-5 text-emerald-600 shrink-0" />
-                  <span>في حالة الحاجة سيتم التواصل معك بالواتس آب حسب الرقم المسجل بالمنصة</span>
+                  <Inbox className="w-5 h-5 text-emerald-700 shrink-0" />
+                  <span>
+                    {currentUser
+                      ? 'سيتم التواصل معك بالموقع، فضلًا متابعة رمز البريد الصادر أعلى الصفحة'
+                      : 'سيتم التواصل معك بالواتس آب حسب الرقم المسجل بالمنصة عند الحاجة'}
+                  </span>
                 </div>
               </div>
 
-              {effectivePhone && (
+              {!currentUser && effectivePhone && (
                 <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950 text-xs font-bold">
                   <div className="w-5 h-5 rounded-md bg-[#25D366] text-white flex items-center justify-center shrink-0 shadow-2xs">
                     <WhatsAppIcon className="w-3.5 h-3.5 fill-white" />
@@ -280,27 +298,6 @@ export const SupportTicketModal: React.FC<SupportTicketModalProps> = ({ isOpen, 
                 />
               </div>
 
-              {/* Informational WhatsApp Notice for Logged in user */}
-              {currentUser && (
-                <div className="bg-teal-50/80 p-3 rounded-xl border border-teal-200/70 text-teal-900 text-[11px] leading-relaxed flex items-start gap-2.5">
-                  <div className="w-6 h-6 rounded-lg bg-[#25D366] text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
-                    <WhatsAppIcon className="w-3.5 h-3.5 fill-white" />
-                  </div>
-                  <div>
-                    <p className="font-bold">في حالة الحاجة سيتم التواصل معك بالواتس آب حسب الرقم المسجل بالمنصة.</p>
-                    {registeredPhone && (
-                      <div className="flex items-center gap-1.5 mt-1 text-[11px]">
-                        <span className="text-teal-800 font-medium">الرقم المعتمد بحسابك:</span>
-                        <span className="font-black font-mono text-emerald-950 tabular-nums bg-white px-2 py-0.5 rounded-md border border-teal-200/80 inline-flex items-center gap-1">
-                          <WhatsAppIcon className="w-3 h-3 text-[#25D366] fill-[#25D366]" />
-                          <span>{registeredPhone}</span>
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
               {/* Actions */}
               <div className="flex items-center gap-2 pt-2">
                 <button
@@ -323,6 +320,7 @@ export const SupportTicketModal: React.FC<SupportTicketModalProps> = ({ isOpen, 
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
-import { StudentsManagement } from './StudentsManagement';
+import { StudentsManagement, PendingTicketStudentAction } from './StudentsManagement';
 import { RewardsManagement } from './RewardsManagement';
 import { PointRulesSettings } from './PointRulesSettings';
 import { AuditLogView } from './AuditLogView';
 import { SupportTicketsManager } from './SupportTicketsManager';
 import { BottomNav } from '../common/BottomNav';
-import { Cog, Users, Gift, Settings, ShieldCheck, Award, LifeBuoy } from 'lucide-react';
+import { useToast } from '../../context/ToastContext';
+import { Users, Gift, Settings, ShieldCheck, LifeBuoy, Terminal } from 'lucide-react';
 
 interface AdminViewProps {
   currentUser: User;
@@ -15,7 +16,9 @@ interface AdminViewProps {
 
 export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
   const [activeTab, setActiveTab] = useState<'students' | 'points' | 'rewards_mgmt' | 'tickets' | 'settings' | 'audit'>('students');
+  const [pendingTicketAction, setPendingTicketAction] = useState<PendingTicketStudentAction | null>(null);
   const [, setTick] = useState(0);
+  const { showToast } = useToast();
 
   useEffect(() => {
     const unsub = subscribeToDataChanges(() => {
@@ -25,51 +28,102 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
   }, []);
 
   const tickets = repository.getSupportTickets();
+  const students = repository.getStudents();
+  const activeStudentsCount = students.filter((s) => s.active).length;
+  const openTicketsCount = tickets.filter((t) => t.status !== 'resolved').length;
+  const pendingRedemptionsCount = repository.getRedemptionRequests({ status: 'pending' }).length;
+
+  const handleExecuteTicketAction = (action: PendingTicketStudentAction) => {
+    setPendingTicketAction(action);
+    setActiveTab('students');
+  };
+
+  const handleCompleteTicketAction = (ticketId: string) => {
+    repository.updateSupportTicket(ticketId, { status: 'resolved' });
+    setPendingTicketAction(null);
+    showToast('تم تنفيذ الطلب وتحديث حالة التذكرة إلى «تمت» ✓', 'success');
+    setTick((t) => t + 1);
+  };
 
   return (
-    <div className="pb-24 max-w-4xl mx-auto px-3 sm:px-4 pt-3">
-      {/* Tech Support Hero Banner */}
-      <div className="mb-4 relative overflow-hidden rounded-2xl bg-gradient-to-l from-slate-900 via-indigo-950 to-indigo-900 text-white p-4 sm:p-5 shadow-lg shadow-indigo-950/20 border border-indigo-700/40 animate-fade-in">
-        {/* Soft decorative background ambient glows */}
-        <div className="absolute -top-10 -left-10 w-44 h-44 bg-indigo-500/15 rounded-full blur-2xl pointer-events-none" />
-        <div className="absolute -bottom-8 -right-8 w-36 h-36 bg-cyan-400/10 rounded-full blur-xl pointer-events-none" />
+    <div className="pb-24 max-w-5xl mx-auto px-3 sm:px-4 pt-3">
+      {/* Technical Support Hero Banner */}
+      <section
+        aria-label="ترحيب الدعم الفني"
+        className="mb-3.5 relative overflow-hidden rounded-2xl bg-gradient-to-l from-slate-900 via-slate-900 to-indigo-950 text-white border border-slate-800 shadow-sm px-4 py-3.5 sm:px-5 sm:py-4"
+      >
+        {/* Subtle technical grid texture */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-[0.07]"
+          style={{
+            backgroundImage:
+              'linear-gradient(to right, rgba(255,255,255,0.6) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.6) 1px, transparent 1px)',
+            backgroundSize: '28px 28px',
+          }}
+        />
 
-        <div className="relative z-10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3.5">
-          <div className="flex items-center gap-3.5">
-            {/* Attractive Avatar & Greeting Icon */}
-            <div className="w-13 h-13 sm:w-15 sm:h-15 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400 text-white flex items-center justify-center text-3xl sm:text-4xl shrink-0 shadow-md shadow-black/30 ring-2 ring-white/20 select-none animate-bounce-short">
-              👋
+        <div className="relative z-10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          {/* Identity & Role */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-xl bg-indigo-500/15 border border-indigo-400/25 text-indigo-300 flex items-center justify-center shrink-0">
+              <Terminal className="w-5 h-5" />
             </div>
-
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-lg sm:text-xl font-black text-white tracking-normal font-sans">
-                  مرحبًا بك، المهندس بسيل
-                </h1>
-                <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-cyan-950 bg-cyan-300 px-2.5 py-0.5 rounded-full shadow-2xs">
-                  <ShieldCheck className="w-3.5 h-3.5 text-cyan-900" />
-                  <span>الدعم الفني</span>
-                </span>
-              </div>
-              <p className="text-xs sm:text-sm text-indigo-200/90 mt-1 font-medium leading-relaxed">
-                لوحة الإدارة والتحكم التقني وإدارة بيانات الحلقات والطلاب وقواعد النقاط
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-lg font-black text-white tracking-tight truncate">
+                مرحباً، {currentUser.name} <span className="text-indigo-300 font-bold">· الدعم الفني</span>
+              </h1>
+              <p className="text-xs text-slate-300 mt-0.5 truncate">
+                إدارة شؤون الطلاب والنقاط وتذاكر الدعم الفني وإعدادات النظام
               </p>
             </div>
           </div>
 
-          {/* Quick Pill: System Control */}
-          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-white/10 backdrop-blur-xs border border-white/15 px-3 py-1.5 rounded-xl text-xs text-white">
-            <span className="text-cyan-300 text-sm">🛠️</span>
-            <span className="font-bold text-indigo-100">إدارة النظام الكاملة</span>
+          {/* Live Operational Counters */}
+          <div className="flex items-center divide-x divide-x-reverse divide-slate-700/80 rounded-xl bg-slate-950/50 border border-slate-800 self-start sm:self-auto shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveTab('students')}
+              className="px-3.5 py-2 text-right hover:bg-white/5 transition-colors cursor-pointer rounded-r-xl"
+            >
+              <span className="block text-[10px] font-medium text-slate-400">الطلاب النشطون</span>
+              <span className="block text-sm font-black text-white tabular-nums font-mono">
+                {activeStudentsCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('tickets')}
+              className="px-3.5 py-2 text-right hover:bg-white/5 transition-colors cursor-pointer"
+            >
+              <span className="block text-[10px] font-medium text-slate-400">تذاكر مفتوحة</span>
+              <span
+                className={`block text-sm font-black tabular-nums font-mono ${
+                  openTicketsCount > 0 ? 'text-amber-300' : 'text-emerald-300'
+                }`}
+              >
+                {openTicketsCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('rewards_mgmt')}
+              className="px-3.5 py-2 text-right hover:bg-white/5 transition-colors cursor-pointer rounded-l-xl"
+            >
+              <span className="block text-[10px] font-medium text-slate-400">طلبات مكافآت</span>
+              <span className="block text-sm font-black text-indigo-200 tabular-nums font-mono">
+                {pendingRedemptionsCount}
+              </span>
+            </button>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* Desktop Tabs */}
       <div className="hidden md:flex items-center gap-1 bg-white p-1 rounded-2xl border border-slate-200 shadow-xs mb-4">
         <button
           onClick={() => setActiveTab('students')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === 'students' ? 'bg-indigo-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
@@ -78,7 +132,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
         </button>
         <button
           onClick={() => setActiveTab('rewards_mgmt')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === 'rewards_mgmt' ? 'bg-indigo-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
@@ -87,7 +141,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
         </button>
         <button
           onClick={() => setActiveTab('tickets')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === 'tickets' ? 'bg-indigo-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
@@ -101,7 +155,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
         </button>
         <button
           onClick={() => setActiveTab('settings')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === 'settings' ? 'bg-indigo-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
@@ -110,7 +164,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
         </button>
         <button
           onClick={() => setActiveTab('audit')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === 'audit' ? 'bg-indigo-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
@@ -121,12 +175,20 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
 
       {/* Views */}
       {(activeTab === 'students' || activeTab === 'points') && (
-        <StudentsManagement adminUser={currentUser} onUpdate={() => setTick((t) => t + 1)} />
+        <StudentsManagement
+          adminUser={currentUser}
+          onUpdate={() => setTick((t) => t + 1)}
+          pendingTicketAction={pendingTicketAction}
+          onTicketActionComplete={handleCompleteTicketAction}
+          onCancelTicketAction={() => setPendingTicketAction(null)}
+        />
       )}
       {activeTab === 'rewards_mgmt' && (
         <RewardsManagement adminUser={currentUser} onUpdate={() => setTick((t) => t + 1)} />
       )}
-      {activeTab === 'tickets' && <SupportTicketsManager />}
+      {activeTab === 'tickets' && (
+        <SupportTicketsManager onExecuteStudentAction={handleExecuteTicketAction} />
+      )}
       {activeTab === 'settings' && (
         <PointRulesSettings adminUser={currentUser} onUpdate={() => setTick((t) => t + 1)} />
       )}

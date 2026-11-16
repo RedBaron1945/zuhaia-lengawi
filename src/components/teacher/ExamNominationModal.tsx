@@ -18,6 +18,7 @@ interface ExamNominationModalProps {
   onClose: () => void;
   students: Student[];
   circle: Circle;
+  circles?: Circle[];
 }
 
 interface StudentNominationDraft {
@@ -31,12 +32,17 @@ export const ExamNominationModal: React.FC<ExamNominationModalProps> = ({
   onClose,
   students,
   circle,
+  circles,
 }) => {
   const { showToast } = useToast();
   const [search, setSearch] = useState('');
   const [drafts, setDrafts] = useState<Record<string, StudentNominationDraft>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [bulkBranchCount, setBulkBranchCount] = useState<number>(1);
+  const effectiveCircles = useMemo(
+    () => (circles && circles.length > 0 ? circles : [circle]),
+    [circles, circle]
+  );
 
   const activeStudents = useMemo(() => (students || []).filter((s) => s.active), [students]);
 
@@ -147,14 +153,15 @@ export const ExamNominationModal: React.FC<ExamNominationModalProps> = ({
         const d = drafts[s.id];
         const count = d?.partsCount && d.partsCount > 0 ? d.partsCount : 1;
         const branch = getBranchByPartsCount(count);
+        const studentCircle = effectiveCircles.find((c) => c.id === s.circleId) || circle;
 
         return {
           studentId: s.id,
           studentName: s.name,
-          circleId: circle.id,
-          circleName: circle.name,
-          teacherId: circle.teacherId,
-          teacherName: circle.teacherName,
+          circleId: studentCircle.id,
+          circleName: studentCircle.name,
+          teacherId: studentCircle.teacherId,
+          teacherName: studentCircle.teacherName,
           partsCount: branch.partsCount,
           partsDescription: branch.title, // 'الفرع الأول - جزء واحد'
           notes: d?.notes?.trim() || undefined,
@@ -193,7 +200,7 @@ export const ExamNominationModal: React.FC<ExamNominationModalProps> = ({
                 ترشيح للاختبار القرآني
               </h3>
               <p className="text-[11px] text-slate-500 font-medium">
-                {circle.name} · المعلم: {circle.teacherName}
+                {effectiveCircles.map((c) => c.name).join(' · ')} · المعلم: {circle.teacherName}
               </p>
             </div>
           </div>
@@ -309,6 +316,11 @@ export const ExamNominationModal: React.FC<ExamNominationModalProps> = ({
                         <h4 className="text-xs sm:text-sm font-black text-slate-900 truncate">
                           {student.name}
                         </h4>
+                        {effectiveCircles.length > 1 && (
+                          <span className="text-[10px] font-bold text-slate-500 block">
+                            {effectiveCircles.find((c) => c.id === student.circleId)?.name || circle.name}
+                          </span>
+                        )}
                       </div>
                     </div>
 

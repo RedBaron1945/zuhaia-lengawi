@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle, Gift, X } from 'lucide-react';
+import { AlertTriangle, Gift } from 'lucide-react';
 
 interface ConfirmationModalProps {
   isOpen: boolean;
@@ -12,6 +12,7 @@ interface ConfirmationModalProps {
   type?: 'primary' | 'danger' | 'reward';
   iconEmoji?: string;
   loading?: boolean;
+  zIndexClass?: string;
 }
 
 export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
@@ -25,11 +26,12 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   type = 'primary',
   iconEmoji,
   loading = false,
+  zIndexClass = 'z-50',
 }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in">
+    <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in`}>
       <div
         className="w-full max-w-sm bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden transform transition-all animate-scale-up"
         role="dialog"
