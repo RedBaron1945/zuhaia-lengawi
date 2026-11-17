@@ -249,7 +249,34 @@ function sanitizeForFirestore<T>(data: T): Record<string, any> {
 
 // In-memory cache of synced items to eliminate redundant writes and downstream read cycles
 const syncedHashes = new Map<string, string>();
-const HARD_DELETED_SEED_STUDENT_IDS = ['umJD21AJBZfD8d4HapZdLR4izc92'];
+const HARD_DELETED_SEED_STUDENT_IDS = [
+  'umJD21AJBZfD8d4HapZdLR4izc92',
+  '8g9oEJRdqsaNGJfoClzQ5ofYM8o2',
+  '4ipFtSNlHdhOieigmbpJodTn2Gx2',
+  'P2HiDOdD6qVQl8j7owLyZ7b0VRA2',
+  'NJ41NTvoclPTPTnK0kPoDXyKQAP2',
+  'qgsb2sYahucl4SmMS52uz487Wb02',
+  'orS9AoCDxBN6grKkW0lvRz9C1fy1',
+  'Bh2QqE4z27OffMlP7QHEnH0sKm43',
+  '2D6GLrJPPCQXxAw5Ao4R2ZiBpUt2',
+  'eqqlscRwHAbrK95fDrMeBB97yfo2',
+  'wfn1G1thBGSBTwJoHnmr9RmnV822',
+  'ZRSlMQDEnJfFRDB98zXQfyDfEEo1',
+  '13BCdtkYC6cbH7j4aTpM8K2y76p1',
+  'C2EWxvorywhXTJEpLle1HDp2i2J3',
+  'r5cBXITYHWTCOLOOI3ZkVeLiLLh1',
+  '7tYRaNNqOOelC1mYdvp1OU3sgnC3',
+  'UIBS5OqSnpfhspNksObBkG39RaI3',
+  'XIZl3ZMAEMZh0ytrzzE6YcpAN7Y2',
+  'aD5vkvAyqMb3ExSiA5rJRR0rRUr1',
+  'R2xPHml7WBOePdEVHW4DhZShFMh2',
+  '0fLTSHjk5LWU3QN9Q4LGbFhUvII3',
+  'Wit3I25DpGS46JmAf8LlexHPW0I2',
+  'MH5ytx1Do0YrouH3RruZCJ1w1qm1',
+  'f3VdNZuRLjgtJ6OXtskUvAtiHuy2',
+  'acsSfLFIU6bK2gwALaan91P0Ks12',
+  'gSEAzNpm5FNjwNDGGANZbSqaGV22',
+];
 const deletedDocIds = new Set<string>([
   ...HARD_DELETED_SEED_STUDENT_IDS,
   ...(typeof localStorage !== 'undefined'
@@ -474,6 +501,8 @@ export interface IRepository {
       amount: number;
       type: PointTransaction['type'];
       reason: string;
+      note?: string;
+      actorId?: string;
       createdBy: string;
       createdByRole: Role;
       idempotencyKey?: string;
@@ -797,8 +826,8 @@ class FirestoreConnectedRepository implements IRepository {
       if (meta.linked_saeed_students_v1) return;
 
       const LINKED_SAEED_STUDENT_IDS = [
-        '4ipFtSNlHdhOieigmbpJodTn2Gx2',
-        'P2HiDOdD6qVQl8j7owLyZ7b0VRA2',
+        'WE8LIn7oK1VtUVeoUyiWMegiDXw2',
+        'xU3gSqrjwSVxTdYag9KUHOPVmIg2',
       ];
       const activeStudentId = user.studentId || user.id;
       const isRelevantUser =
@@ -863,6 +892,263 @@ class FirestoreConnectedRepository implements IRepository {
     }
   }
 
+  private async ensureLinkedOmarAliStudentsInFirestore(): Promise<void> {
+    try {
+      const user = this.activeUser;
+      if (!user) return;
+
+      const meta = this.getStaticCacheMeta();
+      if (meta.linked_omar_ali_new_students_v1) return;
+
+      const LINKED_TARGETS: Array<{ id: string; circleId: string }> = [
+        { id: 'jIGLQ97INSNolwCkfDtSYFaGeyf2', circleId: 'circle_omar' },
+        { id: 'kf8UnfcctYdRXZoLw4I4HvrRob62', circleId: 'circle_ali' },
+      ];
+      const activeStudentId = user.studentId || user.id;
+      const teacherCircleIds = user.role === 'teacher' ? this.getTeacherCircleIds(user) : [];
+
+      const relevantTargets =
+        user.role === 'admin' || user.role === 'supervisor'
+          ? LINKED_TARGETS
+          : user.role === 'teacher'
+          ? LINKED_TARGETS.filter((t) => teacherCircleIds.includes(t.circleId))
+          : user.role === 'student'
+          ? LINKED_TARGETS.filter((t) => t.id === activeStudentId)
+          : [];
+
+      if (relevantTargets.length === 0) return;
+
+      const deletedIds = getPersistedDeletedStudentIds();
+      const canWriteStudentDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'teacher';
+      const canWriteUserDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'student';
+
+      await Promise.all(
+        relevantTargets.map(async ({ id: sid, circleId }) => {
+          if (deletedIds.has(sid)) return;
+          const seed = INITIAL_STUDENTS.find((s) => s.id === sid);
+          if (!seed) return;
+
+          if (canWriteStudentDoc) {
+            const studentRef = doc(db, 'students', sid);
+            const snap = await getDoc(studentRef);
+            if (!snap.exists()) {
+              await setDoc(studentRef, sanitizeForFirestore(seed));
+            } else {
+              const data = snap.data() as Partial<Student> | undefined;
+              if (normalizeCircleId(data?.circleId) !== circleId || !data?.name) {
+                await setDoc(
+                  studentRef,
+                  {
+                    circleId,
+                    ...(data?.name ? {} : { name: seed.name }),
+                  },
+                  { merge: true }
+                );
+              }
+            }
+          }
+
+          if (canWriteUserDoc) {
+            await setDoc(
+              doc(db, 'users', sid),
+              {
+                id: sid,
+                uid: sid,
+                name: seed.name,
+                role: 'student',
+                studentId: sid,
+                circleId,
+                createdAt: '2026-10-28T00:00:00Z',
+              },
+              { merge: true }
+            );
+          }
+        })
+      );
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.linked_omar_ali_new_students_v1 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Linked Omar/Ali new students sync notice:', err?.message || err);
+    }
+  }
+
+  private async ensureLinkedAbbasStudentsInFirestore(): Promise<void> {
+    try {
+      const user = this.activeUser;
+      if (!user) return;
+
+      const meta = this.getStaticCacheMeta();
+      if (meta.linked_abbas_new_students_v1) return;
+
+      const LINKED_TARGETS: Array<{ id: string; circleId: string }> = [
+        { id: 'AeighjzxKfO0Xmikbyx1ldn12rF2', circleId: 'circle_abbas' },
+        { id: 'uROWzrTH6fTSaA8M5VmMOUAhEFE3', circleId: 'circle_abbas' },
+      ];
+      const activeStudentId = user.studentId || user.id;
+      const teacherCircleIds = user.role === 'teacher' ? this.getTeacherCircleIds(user) : [];
+
+      const relevantTargets =
+        user.role === 'admin' || user.role === 'supervisor'
+          ? LINKED_TARGETS
+          : user.role === 'teacher'
+          ? LINKED_TARGETS.filter((t) => teacherCircleIds.includes(t.circleId))
+          : user.role === 'student'
+          ? LINKED_TARGETS.filter((t) => t.id === activeStudentId)
+          : [];
+
+      if (relevantTargets.length === 0) return;
+
+      const deletedIds = getPersistedDeletedStudentIds();
+      const canWriteStudentDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'teacher';
+      const canWriteUserDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'student';
+
+      await Promise.all(
+        relevantTargets.map(async ({ id: sid, circleId }) => {
+          if (deletedIds.has(sid)) return;
+          const seed = INITIAL_STUDENTS.find((s) => s.id === sid);
+          if (!seed) return;
+
+          if (canWriteStudentDoc) {
+            const studentRef = doc(db, 'students', sid);
+            const snap = await getDoc(studentRef);
+            if (!snap.exists()) {
+              await setDoc(studentRef, sanitizeForFirestore(seed));
+            } else {
+              const data = snap.data() as Partial<Student> | undefined;
+              if (normalizeCircleId(data?.circleId) !== circleId || !data?.name) {
+                await setDoc(
+                  studentRef,
+                  {
+                    circleId,
+                    ...(data?.name ? {} : { name: seed.name }),
+                  },
+                  { merge: true }
+                );
+              }
+            }
+          }
+
+          if (canWriteUserDoc) {
+            await setDoc(
+              doc(db, 'users', sid),
+              {
+                id: sid,
+                uid: sid,
+                name: seed.name,
+                role: 'student',
+                studentId: sid,
+                circleId,
+                createdAt: '2026-10-28T00:00:00Z',
+              },
+              { merge: true }
+            );
+          }
+        })
+      );
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.linked_abbas_new_students_v1 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Linked Abbas new students sync notice:', err?.message || err);
+    }
+  }
+
+  private async ensureLinkedAliNewStudentInFirestore(): Promise<void> {
+    try {
+      const user = this.activeUser;
+      if (!user) return;
+
+      const meta = this.getStaticCacheMeta();
+      if (meta.linked_ali_new_student_v2) return;
+
+      const LINKED_TARGETS: Array<{ id: string; circleId: string }> = [
+        { id: 'PQhWBDq8QSa8rAl2gf7NORBXBFL2', circleId: 'circle_ali' },
+      ];
+      const activeStudentId = user.studentId || user.id;
+      const teacherCircleIds = user.role === 'teacher' ? this.getTeacherCircleIds(user) : [];
+
+      const relevantTargets =
+        user.role === 'admin' || user.role === 'supervisor'
+          ? LINKED_TARGETS
+          : user.role === 'teacher'
+          ? LINKED_TARGETS.filter((t) => teacherCircleIds.includes(t.circleId))
+          : user.role === 'student'
+          ? LINKED_TARGETS.filter((t) => t.id === activeStudentId)
+          : [];
+
+      if (relevantTargets.length === 0) return;
+
+      const deletedIds = getPersistedDeletedStudentIds();
+      const canWriteStudentDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'teacher';
+      const canWriteUserDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'student';
+
+      await Promise.all(
+        relevantTargets.map(async ({ id: sid, circleId }) => {
+          if (deletedIds.has(sid)) return;
+          const seed = INITIAL_STUDENTS.find((s) => s.id === sid);
+          if (!seed) return;
+
+          if (canWriteStudentDoc) {
+            const studentRef = doc(db, 'students', sid);
+            const snap = await getDoc(studentRef);
+            if (!snap.exists()) {
+              await setDoc(studentRef, sanitizeForFirestore(seed));
+            } else {
+              const data = snap.data() as Partial<Student> | undefined;
+              if (normalizeCircleId(data?.circleId) !== circleId || !data?.name) {
+                await setDoc(
+                  studentRef,
+                  {
+                    circleId,
+                    ...(data?.name ? {} : { name: seed.name }),
+                  },
+                  { merge: true }
+                );
+              }
+            }
+          }
+
+          if (canWriteUserDoc) {
+            await setDoc(
+              doc(db, 'users', sid),
+              {
+                id: sid,
+                uid: sid,
+                name: seed.name,
+                role: 'student',
+                studentId: sid,
+                circleId,
+                createdAt: '2026-10-28T00:00:00Z',
+              },
+              { merge: true }
+            );
+          }
+        })
+      );
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.linked_ali_new_student_v2 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Linked Ali new student sync notice:', err?.message || err);
+    }
+  }
+
   private getTeacherCircleIds(user: User): string[] {
     const ordered: string[] = [];
     const seen = new Set<string>();
@@ -898,6 +1184,12 @@ class FirestoreConnectedRepository implements IRepository {
       if (!user) return;
 
       const meta = this.getStaticCacheMeta();
+      if (!meta.migrated_abdulaziz_hassan_uid_v1) {
+        await this.migrateAbdulazizHassanUidInFirestore(user);
+      }
+      if (!meta.migrated_baabad_batch_uids_v1) {
+        await this.migrateBaabadBatchUidsInFirestore(user);
+      }
       if (meta.linked_omar_abdulaziz_v1 && meta.baabad_saeed_first_v1) return;
 
       if (meta.linked_omar_abdulaziz_v1 && !meta.baabad_saeed_first_v1) {
@@ -1011,6 +1303,359 @@ class FirestoreConnectedRepository implements IRepository {
     }
   }
 
+  private async migrateAbdulazizHassanUidInFirestore(user: User): Promise<void> {
+    const OLD_UID = '8g9oEJRdqsaNGJfoClzQ5ofYM8o2';
+    const NEW_UID = '99nKyWXb5PYL8s4SziKCKmiCSWt2';
+
+    try {
+      const activeStudentId = user.studentId || user.id;
+      const teacherCircleIds = user.role === 'teacher' ? this.getTeacherCircleIds(user) : [];
+      const isRelevant =
+        user.role === 'admin' ||
+        user.role === 'supervisor' ||
+        (user.role === 'teacher' &&
+          (user.id === 'NSmjSrHJZ6Ozr23TgdRms2qvPI32' ||
+            teacherCircleIds.includes('circle_omar_abdulaziz'))) ||
+        (user.role === 'student' && (activeStudentId === NEW_UID || activeStudentId === OLD_UID));
+
+      if (!isRelevant) return;
+
+      const seed = INITIAL_STUDENTS.find((s) => s.id === NEW_UID);
+      if (!seed) return;
+
+      const oldStudentRef = doc(db, 'students', OLD_UID);
+      const newStudentRef = doc(db, 'students', NEW_UID);
+      const [oldSnap, newSnap] = await Promise.all([getDoc(oldStudentRef), getDoc(newStudentRef)]);
+
+      if (!newSnap.exists()) {
+        const legacyData = oldSnap.exists() ? (oldSnap.data() as Partial<Student>) : {};
+        await setDoc(
+          newStudentRef,
+          sanitizeForFirestore({
+            ...seed,
+            ...legacyData,
+            id: NEW_UID,
+            name: seed.name,
+            circleId: 'circle_omar_abdulaziz',
+          })
+        );
+      } else {
+        const existingData = newSnap.data() as Partial<Student> | undefined;
+        if (normalizeCircleId(existingData?.circleId) !== 'circle_omar_abdulaziz' || !existingData?.name) {
+          await setDoc(
+            newStudentRef,
+            {
+              circleId: 'circle_omar_abdulaziz',
+              ...(existingData?.name ? {} : { name: seed.name }),
+            },
+            { merge: true }
+          );
+        }
+      }
+
+      await setDoc(
+        doc(db, 'users', NEW_UID),
+        {
+          id: NEW_UID,
+          uid: NEW_UID,
+          name: seed.name,
+          role: 'student',
+          studentId: NEW_UID,
+          circleId: 'circle_omar_abdulaziz',
+          createdAt: '2026-10-28T00:00:00Z',
+        },
+        { merge: true }
+      );
+
+      // Move any child records from OLD_UID to NEW_UID and delete old student/user docs
+      if (user.role === 'admin' || user.role === 'supervisor' || user.role === 'teacher') {
+        const childCollections = [
+          'evaluations',
+          'transactions',
+          'attendance',
+          'redemptions',
+          'exam_nominations',
+        ];
+        await Promise.all(
+          childCollections.map(async (colName) => {
+            try {
+              const snap = await getDocs(
+                query(collection(db, colName), where('studentId', '==', OLD_UID))
+              );
+              if (!snap.empty) {
+                await Promise.all(
+                  snap.docs.map((d) =>
+                    setDoc(doc(db, colName, d.id), { studentId: NEW_UID }, { merge: true })
+                  )
+                );
+              }
+            } catch (err: any) {
+              console.warn(`UID migration child notice (${colName}):`, err?.message || err);
+            }
+          })
+        );
+      }
+
+      if (oldSnap.exists()) {
+        await deleteDoc(oldStudentRef);
+      }
+      const oldUserRef = doc(db, 'users', OLD_UID);
+      const oldUserSnap = await getDoc(oldUserRef);
+      if (oldUserSnap.exists()) {
+        await deleteDoc(oldUserRef);
+      }
+
+      // Migrate local cached arrays too so old UID never appears locally
+      const deletedIds = getPersistedDeletedStudentIds();
+      deletedIds.add(OLD_UID);
+      savePersistedDeletedStudentIds(deletedIds);
+      void syncDeletedStudentsTombstonesToFirestore(deletedIds);
+
+      const localStudents = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, []);
+      const legacyLocal = localStudents.find((s) => s.id === OLD_UID);
+      const withoutOld = localStudents.filter((s) => s.id !== OLD_UID);
+      if (!withoutOld.some((s) => s.id === NEW_UID)) {
+        withoutOld.push({
+          ...seed,
+          ...(legacyLocal || {}),
+          id: NEW_UID,
+          name: seed.name,
+          circleId: 'circle_omar_abdulaziz',
+        });
+      }
+      saveItem(STORAGE_KEYS.STUDENTS, withoutOld);
+
+      const migrateLocalStudentId = <T extends { studentId?: string }>(key: string) => {
+        const items = loadItem<T[]>(key, []);
+        let changed = false;
+        const updated = items.map((item) => {
+          if (item.studentId === OLD_UID) {
+            changed = true;
+            return { ...item, studentId: NEW_UID };
+          }
+          return item;
+        });
+        if (changed) {
+          saveItem(key, updated);
+        }
+      };
+      migrateLocalStudentId<EvaluationRecord>(STORAGE_KEYS.EVALUATIONS);
+      migrateLocalStudentId<PointTransaction>(STORAGE_KEYS.TRANSACTIONS);
+      migrateLocalStudentId<AttendanceRecord>(STORAGE_KEYS.ATTENDANCE);
+      migrateLocalStudentId<RedemptionRequest>(STORAGE_KEYS.REDEMPTIONS);
+      migrateLocalStudentId<ExamNomination>(STORAGE_KEYS.EXAM_NOMINATIONS);
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.migrated_abdulaziz_hassan_uid_v1 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('UID migration notice:', err?.message || err);
+    }
+  }
+
+  private async migrateBaabadBatchUidsInFirestore(user: User): Promise<void> {
+    const MIGRATIONS: Array<{ oldUid: string; newUid: string; circleId: string }> = [
+      { oldUid: '4ipFtSNlHdhOieigmbpJodTn2Gx2', newUid: 'WE8LIn7oK1VtUVeoUyiWMegiDXw2', circleId: 'circle_saeed' },
+      { oldUid: 'P2HiDOdD6qVQl8j7owLyZ7b0VRA2', newUid: 'xU3gSqrjwSVxTdYag9KUHOPVmIg2', circleId: 'circle_saeed' },
+      { oldUid: 'NJ41NTvoclPTPTnK0kPoDXyKQAP2', newUid: 'mazEYvcDjWQFJGJ2gJE3VqD92yb2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'qgsb2sYahucl4SmMS52uz487Wb02', newUid: 'hpcxec6jyaW9JsqmXgQzUxJjHmg1', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'orS9AoCDxBN6grKkW0lvRz9C1fy1', newUid: 'WIqMH3z2V1VHUs63cC9BfTpKMKC2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'Bh2QqE4z27OffMlP7QHEnH0sKm43', newUid: 'dmG8X1rNHhc6PgSTGHQSpMRAe9i1', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: '2D6GLrJPPCQXxAw5Ao4R2ZiBpUt2', newUid: 'YsW0SiKnsOfR5tQLbgvpg1qED7F2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'eqqlscRwHAbrK95fDrMeBB97yfo2', newUid: 'bAyIbEbRr7gEYDGGaKesi62Tkc53', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'wfn1G1thBGSBTwJoHnmr9RmnV822', newUid: 'tL4d74QQ9oegfKFvcu1vxiVt4DF3', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'ZRSlMQDEnJfFRDB98zXQfyDfEEo1', newUid: 'ncDK5Jkw6TWyFa87y0J17LB5Q1h1', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: '13BCdtkYC6cbH7j4aTpM8K2y76p1', newUid: 'zgE2FLDwvbhnQ1daBiBB2HXVpek2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'C2EWxvorywhXTJEpLle1HDp2i2J3', newUid: 'vLRwwNsFQEhjVVC7CxYd3CtaK2K2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'r5cBXITYHWTCOLOOI3ZkVeLiLLh1', newUid: 'VrKUJxm0zuaht1ZzLc3j1JIqyQ92', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: '7tYRaNNqOOelC1mYdvp1OU3sgnC3', newUid: 'znMVDJQsIKUspEgalmK5nxbVBD13', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'UIBS5OqSnpfhspNksObBkG39RaI3', newUid: 'PhVeXhJU34SiJUUR0NhW69VnoeB3', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'XIZl3ZMAEMZh0ytrzzE6YcpAN7Y2', newUid: '7HEQVOCi0bYp0pYSXP6afiqV1mf2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'aD5vkvAyqMb3ExSiA5rJRR0rRUr1', newUid: 'PjlFnI49MTR7oV95AiaARNJqKCo1', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'R2xPHml7WBOePdEVHW4DhZShFMh2', newUid: 'P0KbvgjbGjPALndxrq8SFLUFpcD3', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: '0fLTSHjk5LWU3QN9Q4LGbFhUvII3', newUid: 'hMBWFivHBwfwzpyCnjqLtiT3wug2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'Wit3I25DpGS46JmAf8LlexHPW0I2', newUid: 'DQBJXCADjUNvVN0KpIf22p6cYx23', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'MH5ytx1Do0YrouH3RruZCJ1w1qm1', newUid: 'TpiGsSQhY9fL7FSrqaNniuUc3Ez2', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'f3VdNZuRLjgtJ6OXtskUvAtiHuy2', newUid: 'Pu4N4qOVDPflyffywISIP1dClC43', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'acsSfLFIU6bK2gwALaan91P0Ks12', newUid: '9GeVLJRWNPULtuhHGm0GwHh92ai1', circleId: 'circle_omar_abdulaziz' },
+      { oldUid: 'gSEAzNpm5FNjwNDGGANZbSqaGV22', newUid: 'f6WUBDPkOPR8CT1D8elwmJLCJJm1', circleId: 'circle_omar_abdulaziz' },
+    ];
+
+    try {
+      const activeStudentId = user.studentId || user.id;
+      const teacherCircleIds = user.role === 'teacher' ? this.getTeacherCircleIds(user) : [];
+      const isStaff =
+        user.role === 'admin' ||
+        user.role === 'supervisor' ||
+        (user.role === 'teacher' &&
+          (user.id === 'NSmjSrHJZ6Ozr23TgdRms2qvPI32' ||
+            teacherCircleIds.includes('circle_omar_abdulaziz') ||
+            teacherCircleIds.includes('circle_saeed')));
+
+      const relevantMigrations = isStaff
+        ? MIGRATIONS
+        : user.role === 'student'
+        ? MIGRATIONS.filter((m) => m.newUid === activeStudentId || m.oldUid === activeStudentId)
+        : [];
+
+      if (relevantMigrations.length === 0) return;
+
+      const migrationByOld = new Map(relevantMigrations.map((m) => [m.oldUid, m.newUid]));
+      const deletedIds = getPersistedDeletedStudentIds();
+
+      await Promise.all(
+        relevantMigrations.map(async ({ oldUid, newUid, circleId }) => {
+          const seed = INITIAL_STUDENTS.find((s) => s.id === newUid);
+          if (!seed) return;
+
+          const oldStudentRef = doc(db, 'students', oldUid);
+          const newStudentRef = doc(db, 'students', newUid);
+          const [oldSnap, newSnap] = await Promise.all([getDoc(oldStudentRef), getDoc(newStudentRef)]);
+
+          if (!newSnap.exists()) {
+            const legacyData = oldSnap.exists() ? (oldSnap.data() as Partial<Student>) : {};
+            await setDoc(
+              newStudentRef,
+              sanitizeForFirestore({
+                ...seed,
+                ...legacyData,
+                id: newUid,
+                name: seed.name,
+                circleId,
+              })
+            );
+          } else {
+            const existingData = newSnap.data() as Partial<Student> | undefined;
+            if (normalizeCircleId(existingData?.circleId) !== circleId || !existingData?.name) {
+              await setDoc(
+                newStudentRef,
+                {
+                  circleId,
+                  ...(existingData?.name ? {} : { name: seed.name }),
+                },
+                { merge: true }
+              );
+            }
+          }
+
+          await setDoc(
+            doc(db, 'users', newUid),
+            {
+              id: newUid,
+              uid: newUid,
+              name: seed.name,
+              role: 'student',
+              studentId: newUid,
+              circleId,
+              createdAt: '2026-10-28T00:00:00Z',
+            },
+            { merge: true }
+          );
+
+          if (isStaff) {
+            const childCollections = [
+              'evaluations',
+              'transactions',
+              'attendance',
+              'redemptions',
+              'exam_nominations',
+            ];
+            await Promise.all(
+              childCollections.map(async (colName) => {
+                try {
+                  const snap = await getDocs(
+                    query(collection(db, colName), where('studentId', '==', oldUid))
+                  );
+                  if (!snap.empty) {
+                    await Promise.all(
+                      snap.docs.map((d) =>
+                        setDoc(doc(db, colName, d.id), { studentId: newUid }, { merge: true })
+                      )
+                    );
+                  }
+                } catch (err: any) {
+                  console.warn(`Batch UID child notice (${colName}):`, err?.message || err);
+                }
+              })
+            );
+          }
+
+          if (oldSnap.exists()) {
+            await deleteDoc(oldStudentRef);
+          }
+          const oldUserRef = doc(db, 'users', oldUid);
+          const oldUserSnap = await getDoc(oldUserRef);
+          if (oldUserSnap.exists()) {
+            await deleteDoc(oldUserRef);
+          }
+
+          deletedIds.add(oldUid);
+        })
+      );
+
+      savePersistedDeletedStudentIds(deletedIds);
+      void syncDeletedStudentsTombstonesToFirestore(deletedIds);
+
+      // Update localStorage caches so old UIDs never show up locally
+      const localStudents = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, []);
+      const legacyByOld = new Map<string, Student>();
+      localStudents.forEach((s) => {
+        if (migrationByOld.has(s.id)) {
+          legacyByOld.set(s.id, s);
+        }
+      });
+      const cleanedStudents = localStudents.filter((s) => !migrationByOld.has(s.id));
+      const existingStudentIds = new Set(cleanedStudents.map((s) => s.id));
+      relevantMigrations.forEach(({ oldUid, newUid, circleId }) => {
+        if (!existingStudentIds.has(newUid)) {
+          const seed = INITIAL_STUDENTS.find((s) => s.id === newUid);
+          if (seed) {
+            const legacyLocal = legacyByOld.get(oldUid);
+            cleanedStudents.push({
+              ...seed,
+              ...(legacyLocal || {}),
+              id: newUid,
+              name: seed.name,
+              circleId,
+            });
+            existingStudentIds.add(newUid);
+          }
+        }
+      });
+      saveItem(STORAGE_KEYS.STUDENTS, cleanedStudents);
+
+      const migrateLocalStudentIds = <T extends { studentId?: string }>(key: string) => {
+        const items = loadItem<T[]>(key, []);
+        let changed = false;
+        const updated = items.map((item) => {
+          if (item.studentId && migrationByOld.has(item.studentId)) {
+            changed = true;
+            return { ...item, studentId: migrationByOld.get(item.studentId)! };
+          }
+          return item;
+        });
+        if (changed) {
+          saveItem(key, updated);
+        }
+      };
+      migrateLocalStudentIds<EvaluationRecord>(STORAGE_KEYS.EVALUATIONS);
+      migrateLocalStudentIds<PointTransaction>(STORAGE_KEYS.TRANSACTIONS);
+      migrateLocalStudentIds<AttendanceRecord>(STORAGE_KEYS.ATTENDANCE);
+      migrateLocalStudentIds<RedemptionRequest>(STORAGE_KEYS.REDEMPTIONS);
+      migrateLocalStudentIds<ExamNomination>(STORAGE_KEYS.EXAM_NOMINATIONS);
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.migrated_baabad_batch_uids_v1 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Baabad batch UID migration notice:', err?.message || err);
+    }
+  }
+
   public async refreshStaticCaches(force = false): Promise<void> {
     const role = this.activeUser?.role;
     if (!role) return;
@@ -1024,6 +1669,9 @@ class FirestoreConnectedRepository implements IRepository {
       }),
       this.syncDeletedStudentsFromFirestore(force).then(async () => {
         await this.ensureLinkedSaeedStudentsInFirestore();
+        await this.ensureLinkedOmarAliStudentsInFirestore();
+        await this.ensureLinkedAbbasStudentsInFirestore();
+        await this.ensureLinkedAliNewStudentInFirestore();
         await this.ensureOmarAbdulazizCircleAndStudentsInFirestore();
       }),
     ];
@@ -2304,6 +2952,8 @@ class FirestoreConnectedRepository implements IRepository {
     amount: number;
     type: PointTransaction['type'];
     reason: string;
+    note?: string;
+    actorId?: string;
     createdBy: string;
     createdByRole: Role;
     idempotencyKey?: string;
@@ -2316,6 +2966,7 @@ class FirestoreConnectedRepository implements IRepository {
     }
 
     const student = students[studentIndex];
+    const balanceBefore = student.currentPoints;
     const transactions = this.getTransactions();
 
     if (params.idempotencyKey) {
@@ -2330,12 +2981,14 @@ class FirestoreConnectedRepository implements IRepository {
       }
     }
 
-    if (params.amount < 0 && student.currentPoints + params.amount < 0) {
+    if (params.amount < 0 && balanceBefore + params.amount < 0) {
       return {
         success: false,
-        message: `رصيد الطالب لا يكفي (${student.currentPoints} نقطة متاحة فقط).`,
+        message: `رصيد الطالب لا يكفي (${balanceBefore} نقطة متاحة فقط).`,
       };
     }
+
+    const balanceAfter = Math.max(0, balanceBefore + params.amount);
 
     const newTx: PointTransaction = {
       id: `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -2355,19 +3008,37 @@ class FirestoreConnectedRepository implements IRepository {
     syncToFirestore('transactions', newTx);
 
     // Atomically update student denormalized current points
-    student.currentPoints = Math.max(0, student.currentPoints + params.amount);
+    student.currentPoints = balanceAfter;
     student.lastActivityDate = newTx.date;
     students[studentIndex] = student;
     saveItem(STORAGE_KEYS.STUDENTS, students);
     syncToFirestore('students', student);
 
     if (params.type === 'admin_bonus' || params.type === 'admin_correction' || params.createdByRole === 'admin') {
+      const cleanNote = params.note?.trim();
+      const signedAmountText = `${params.amount >= 0 ? `+${params.amount}` : params.amount}`;
+      const isReversal = params.reason.startsWith('تصحيح عكسي');
+      const actionTitle = isReversal
+        ? 'تصحيح عكسي للنقاط'
+        : params.amount >= 0
+        ? 'إضافة نقاط إدارية'
+        : 'خصم نقاط إداري';
+
+      const detailParts = [
+        `الطالب: ${student.name}`,
+        `التعديل: ${signedAmountText}`,
+        `الرصيد: ${balanceBefore} ← ${balanceAfter}`,
+        `السبب: ${params.reason}`,
+        ...(cleanNote ? [`ملاحظة: ${cleanNote}`] : []),
+        `المسؤول: ${params.createdBy}`,
+      ];
+
       this.addAuditLog({
-        actorId: params.createdBy,
+        actorId: params.actorId || params.createdBy,
         actorName: params.createdBy,
         actorRole: params.createdByRole,
-        action: params.amount >= 0 ? 'إضافة نقاط إدارية' : 'خصم نقاط إداري',
-        details: `${params.amount >= 0 ? '+' : ''}${params.amount} نقطة للطالب ${student.name} - السبب: ${params.reason}`,
+        action: actionTitle,
+        details: detailParts.join(' | '),
         targetType: 'point',
         targetId: student.id,
       });
@@ -3544,6 +4215,13 @@ class FirestoreConnectedRepository implements IRepository {
 
   deleteAuditLog(logId: string): { success: boolean; message: string } {
     const logs = this.getAuditLogs();
+    const target = logs.find((l) => l.id === logId);
+    if (target?.targetType === 'point') {
+      return {
+        success: false,
+        message: 'سجلات تعديل النقاط محمية ولا يمكن حذفها؛ يتم التصحيح بعملية عكسية جديدة.',
+      };
+    }
     const filtered = logs.filter((l) => l.id !== logId);
     saveItem(STORAGE_KEYS.AUDIT_LOGS, filtered);
     deleteFromFirestore('audit_logs', logId);
@@ -3554,13 +4232,22 @@ class FirestoreConnectedRepository implements IRepository {
 
   clearAllAuditLogs(): { success: boolean; message: string } {
     const logs = this.getAuditLogs();
-    logs.forEach((l) => {
-      deleteFromFirestore('audit_logs', l.id);
-      deletedDocIds.add(l.id);
-    });
-    saveItem(STORAGE_KEYS.AUDIT_LOGS, []);
+    const preservedPointLogs = logs.filter((l) => l.targetType === 'point');
+    logs
+      .filter((l) => l.targetType !== 'point')
+      .forEach((l) => {
+        deleteFromFirestore('audit_logs', l.id);
+        deletedDocIds.add(l.id);
+      });
+    saveItem(STORAGE_KEYS.AUDIT_LOGS, preservedPointLogs);
     notifySubscribers();
-    return { success: true, message: 'تم مسح كامل سجل العمليات بنجاح' };
+    return {
+      success: true,
+      message:
+        preservedPointLogs.length > 0
+          ? 'تم مسح السجلات غير المرتبطة بالنقاط مع الاحتفاظ بسجلات النقاط الموثقة.'
+          : 'تم مسح كامل سجل العمليات بنجاح',
+    };
   }
 
   getAchievements(studentId?: string): Achievement[] {

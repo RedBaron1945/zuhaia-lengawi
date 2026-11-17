@@ -1,0 +1,334 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Authenticated platform user account mapped to Firebase Auth UID and RBAC role.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "role": { "type": "string", "enum": ["student", "teacher", "supervisor", "admin"] },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "circleId": { "type": "string", "maxLength": 128 },
+        "avatar": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "name", "role"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Quran circle student profile, points balance, and attendance stats.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "email": { "type": "string", "maxLength": 200 },
+        "circleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "currentPoints": { "type": "number" },
+        "streakDays": { "type": "number" },
+        "attendanceRate": { "type": "number" },
+        "memorizationRating": { "type": "string", "maxLength": 64 },
+        "active": { "type": "boolean" },
+        "phone": { "type": "string", "maxLength": 40 },
+        "parentPhone": { "type": "string", "maxLength": 40 },
+        "fullNameQuad": { "type": "string", "maxLength": 240 },
+        "nationalId": { "type": "string", "maxLength": 40 },
+        "nationality": { "type": "string", "maxLength": 80 },
+        "birthDate": { "type": "string", "maxLength": 40 },
+        "birthPlace": { "type": "string", "maxLength": 120 },
+        "age": { "type": "number" },
+        "schoolName": { "type": "string", "maxLength": 200 },
+        "educationalLevel": { "type": "string", "maxLength": 80 },
+        "address": { "type": "string", "maxLength": 300 },
+        "guardianName": { "type": "string", "maxLength": 200 },
+        "guardianPhone": { "type": "string", "maxLength": 40 },
+        "guardianRelation": { "type": "string", "maxLength": 60 },
+        "profileCompleted": { "type": "boolean" },
+        "lastActivityDate": { "type": "string", "maxLength": 64 },
+        "consecutiveAbsences": { "type": "number" },
+        "daysWithoutLog": { "type": "number" },
+        "attentionReason": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["id", "name", "circleId", "currentPoints", "active"]
+    },
+    "Circle": {
+      "title": "Circle",
+      "description": "Quran memorization circle assigned to a teacher.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "teacherId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "teacherName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "schedule": { "type": "string", "maxLength": 200 },
+        "studentCount": { "type": "number" },
+        "description": { "type": "string", "maxLength": 500 },
+        "room": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["id", "name", "teacherId", "teacherName"]
+    },
+    "Teacher": {
+      "title": "Teacher",
+      "description": "Quran circle teacher account and assigned circle IDs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "email": { "type": "string", "maxLength": 200 },
+        "circleIds": { "type": "array" },
+        "phone": { "type": "string", "maxLength": 40 },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "name", "circleIds", "active"]
+    },
+    "EvaluationRecord": {
+      "title": "EvaluationRecord",
+      "description": "Daily student evaluation record scoped to a student and circle.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 200 },
+        "circleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "date": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "dayName": { "type": "string", "maxLength": 40 },
+        "weekNumber": { "type": "number" },
+        "month": { "type": "string", "maxLength": 20 },
+        "attendance": { "type": "string", "maxLength": 20 },
+        "attendancePoints": { "type": "number" },
+        "disciplineScore": { "type": "number" },
+        "uniformScore": { "type": "number" },
+        "memorizationScore": { "type": "number" },
+        "revisionScore": { "type": "number" },
+        "familyMeetingScore": { "type": "number" },
+        "behaviorScore": { "type": "string", "maxLength": 40 },
+        "totalPoints": { "type": "number" },
+        "pointsAwarded": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "recordedBy": { "type": "string", "maxLength": 200 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "studentId", "circleId", "date"]
+    },
+    "PointTransaction": {
+      "title": "PointTransaction",
+      "description": "Points ledger transaction belonging to a student.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 200 },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "maxLength": 64 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "date": { "type": "string", "maxLength": 64 },
+        "createdBy": { "type": "string", "maxLength": 200 },
+        "createdByRole": { "type": "string", "enum": ["student", "teacher", "supervisor", "admin"] },
+        "idempotencyKey": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["id", "studentId", "amount", "type", "date"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Legacy session attendance record for a student.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 200 },
+        "circleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 40 },
+        "session": { "type": "string", "maxLength": 60 },
+        "status": { "type": "string", "enum": ["present", "absent", "excused"] },
+        "pointsAwarded": { "type": "number" },
+        "recordedBy": { "type": "string", "maxLength": 200 },
+        "timestamp": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "studentId", "circleId", "date", "status"]
+    },
+    "Reward": {
+      "title": "Reward",
+      "description": "Catalog reward item redeemable by students.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "costPoints": { "type": "number" },
+        "emoji": { "type": "string", "maxLength": 32 },
+        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "totalQuantity": { "type": "number" },
+        "remainingQuantity": { "type": "number" },
+        "available": { "type": "boolean" },
+        "category": { "type": "string", "maxLength": 100 },
+        "originalValueSar": { "type": "number" },
+        "expiresAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "title", "costPoints", "remainingQuantity", "available"]
+    },
+    "RedemptionRequest": {
+      "title": "RedemptionRequest",
+      "description": "Student reward redemption request and fulfillment workflow.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 200 },
+        "circleName": { "type": "string", "maxLength": 200 },
+        "rewardId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "rewardTitle": { "type": "string", "maxLength": 200 },
+        "rewardCost": { "type": "number" },
+        "rewardEmoji": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["pending", "approved", "ready", "delivered", "rejected"] },
+        "requestDate": { "type": "string", "maxLength": 64 },
+        "updatedDate": { "type": "string", "maxLength": 64 },
+        "handledBy": { "type": "string", "maxLength": 200 },
+        "rejectionReason": { "type": "string", "maxLength": 500 },
+        "refunded": { "type": "boolean" }
+      },
+      "required": ["id", "studentId", "rewardId", "rewardCost", "status", "requestDate"]
+    },
+    "ExamNomination": {
+      "title": "ExamNomination",
+      "description": "Quran exam nomination submitted by a teacher for a student.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 200 },
+        "circleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "circleName": { "type": "string", "maxLength": 200 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "teacherName": { "type": "string", "maxLength": 200 },
+        "partsCount": { "type": "number" },
+        "partsDescription": { "type": "string", "maxLength": 200 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["pending", "completed", "cancelled"] },
+        "requestDate": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "completedAt": { "type": "string", "maxLength": 64 },
+        "handledBy": { "type": "string", "maxLength": 200 },
+        "cancellationReason": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "studentId", "circleId", "partsCount", "status", "requestDate"]
+    },
+    "PointRules": {
+      "title": "PointRules",
+      "description": "Platform configuration and tombstone documents.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attendanceEarly": { "type": "number" },
+        "attendanceLate": { "type": "number" },
+        "attendanceAbsent": { "type": "number" },
+        "disciplineMax": { "type": "number" },
+        "uniformMax": { "type": "number" },
+        "memorizationMax": { "type": "number" },
+        "revisionMax": { "type": "number" },
+        "ids": { "type": "array" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Administrative and operational audit trail records.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorId": { "type": "string", "maxLength": 200 },
+        "actorName": { "type": "string", "maxLength": 200 },
+        "actorRole": { "type": "string", "enum": ["student", "teacher", "supervisor", "admin"] },
+        "action": { "type": "string", "maxLength": 200 },
+        "details": { "type": "string", "maxLength": 1500 },
+        "targetType": { "type": "string", "enum": ["student", "reward", "point", "teacher", "circle", "settings", "redemption"] },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "actorId", "actorName", "actorRole", "action", "timestamp"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Authenticated user support ticket with replies.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ticketType": { "type": "string", "maxLength": 60 },
+        "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+        "message": { "type": "string", "minLength": 1, "maxLength": 3000 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "senderRole": { "type": "string", "enum": ["student", "teacher", "supervisor", "admin"] },
+        "senderPhone": { "type": "string", "maxLength": 40 },
+        "senderEmail": { "type": "string", "maxLength": 200 },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["new", "in_progress", "resolved"] },
+        "adminReply": { "type": "string", "maxLength": 3000 },
+        "adminReplyAt": { "type": "string", "maxLength": 64 },
+        "adminReplyBy": { "type": "string", "maxLength": 200 },
+        "replies": { "type": "array" },
+        "unreadByUser": { "type": "boolean" },
+        "userLastReadAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "ticketType", "priority", "message", "senderName", "senderId", "createdAt", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Authenticated user profiles and RBAC roles."
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Student PII and points balances restricted to admin, supervisor, circle teacher, and self."
+    },
+    "/circles/{circleId}": {
+      "schema": { "$ref": "#/entities/Circle" },
+      "description": "Quran circles readable by authenticated users and writable by admin/supervisor."
+    },
+    "/teachers/{teacherId}": {
+      "schema": { "$ref": "#/entities/Teacher" },
+      "description": "Teacher profiles and circle assignments readable by admin, supervisor, and self."
+    },
+    "/evaluations/{evalId}": {
+      "schema": { "$ref": "#/entities/EvaluationRecord" },
+      "description": "Daily student evaluations scoped by circle and student."
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/PointTransaction" },
+      "description": "Points ledger entries scoped by student and circle teacher."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Session attendance records scoped by circle and student."
+    },
+    "/rewards/{rewardId}": {
+      "schema": { "$ref": "#/entities/Reward" },
+      "description": "Rewards catalog readable by authenticated users."
+    },
+    "/redemptions/{redemptionId}": {
+      "schema": { "$ref": "#/entities/RedemptionRequest" },
+      "description": "Reward redemption requests scoped by student owner and supervisor/admin."
+    },
+    "/exam_nominations/{nominationId}": {
+      "schema": { "$ref": "#/entities/ExamNomination" },
+      "description": "Quran exam nominations scoped by circle teacher, student owner, and supervisor/admin."
+    },
+    "/rules/{ruleId}": {
+      "schema": { "$ref": "#/entities/PointRules" },
+      "description": "System point rules and deleted student tombstones."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Audit logs readable and deletable only by admin; append-only for authenticated events."
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Support tickets restricted strictly to ticket owner, supervisor (own tickets), and tech support admin."
+    }
+  }
+}

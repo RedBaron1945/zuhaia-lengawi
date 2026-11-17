@@ -226,8 +226,8 @@ export const CircleAttendanceComparison: React.FC<CircleAttendanceComparisonProp
                     </h4>
                   </div>
 
-                  <p className="text-[11px] text-slate-500 truncate mb-2">
-                    {item.circle.teacherName} · <span className="font-semibold text-slate-700">{item.studentCount} طلاب</span>
+                  <p className="text-[11px] text-slate-500 truncate mb-2 tabular-nums">
+                    {item.circle.teacherName} · <span className="font-semibold text-slate-700">{item.studentCount} طلاب</span> · <span className="font-extrabold text-teal-800">{item.totalPoints} ن</span>
                   </p>
 
                   {/* Trend Arrow Indicator vs Average */}

@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
-import { StudentsManagement, PendingTicketStudentAction } from './StudentsManagement';
+import { StudentsManagement } from './StudentsManagement';
 import { RewardsManagement } from './RewardsManagement';
 import { PointRulesSettings } from './PointRulesSettings';
 import { AuditLogView } from './AuditLogView';
 import { SupportTicketsManager } from './SupportTicketsManager';
 import { BottomNav } from '../common/BottomNav';
-import { useToast } from '../../context/ToastContext';
 import { Users, Gift, Settings, ShieldCheck, LifeBuoy, Terminal } from 'lucide-react';
 
 interface AdminViewProps {
@@ -16,9 +15,7 @@ interface AdminViewProps {
 
 export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
   const [activeTab, setActiveTab] = useState<'students' | 'points' | 'rewards_mgmt' | 'tickets' | 'settings' | 'audit'>('students');
-  const [pendingTicketAction, setPendingTicketAction] = useState<PendingTicketStudentAction | null>(null);
   const [, setTick] = useState(0);
-  const { showToast } = useToast();
 
   useEffect(() => {
     const unsub = subscribeToDataChanges(() => {
@@ -32,18 +29,6 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
   const activeStudentsCount = students.filter((s) => s.active).length;
   const openTicketsCount = tickets.filter((t) => t.status !== 'resolved').length;
   const pendingRedemptionsCount = repository.getRedemptionRequests({ status: 'pending' }).length;
-
-  const handleExecuteTicketAction = (action: PendingTicketStudentAction) => {
-    setPendingTicketAction(action);
-    setActiveTab('students');
-  };
-
-  const handleCompleteTicketAction = (ticketId: string) => {
-    repository.updateSupportTicket(ticketId, { status: 'resolved' });
-    setPendingTicketAction(null);
-    showToast('تم تنفيذ الطلب وتحديث حالة التذكرة إلى «تمت» ✓', 'success');
-    setTick((t) => t + 1);
-  };
 
   return (
     <div className="pb-24 max-w-5xl mx-auto px-3 sm:px-4 pt-3">
@@ -178,21 +163,19 @@ export const AdminView: React.FC<AdminViewProps> = ({ currentUser }) => {
         <StudentsManagement
           adminUser={currentUser}
           onUpdate={() => setTick((t) => t + 1)}
-          pendingTicketAction={pendingTicketAction}
-          onTicketActionComplete={handleCompleteTicketAction}
-          onCancelTicketAction={() => setPendingTicketAction(null)}
+          onNavigateToAuditLog={() => setActiveTab('audit')}
         />
       )}
       {activeTab === 'rewards_mgmt' && (
         <RewardsManagement adminUser={currentUser} onUpdate={() => setTick((t) => t + 1)} />
       )}
       {activeTab === 'tickets' && (
-        <SupportTicketsManager onExecuteStudentAction={handleExecuteTicketAction} />
+        <SupportTicketsManager />
       )}
       {activeTab === 'settings' && (
         <PointRulesSettings adminUser={currentUser} onUpdate={() => setTick((t) => t + 1)} />
       )}
-      {activeTab === 'audit' && <AuditLogView />}
+      {activeTab === 'audit' && <AuditLogView currentUser={currentUser} />}
 
       {/* Mobile Bottom Navigation */}
       <BottomNav

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Student } from '../../types';
+import { UNASSIGNED_CIRCLE_ID } from '../../data/mockData';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { SupervisorStats } from './SupervisorStats';
 import { NeedsAttentionList } from './NeedsAttentionList';
@@ -33,9 +34,12 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
     return unsub;
   }, []);
 
+  const circles = repository.getCircles();
+  const officialStudents = students.filter((s) => s.circleId !== UNASSIGNED_CIRCLE_ID);
+  const activeStudentsCount = officialStudents.filter((s) => s.active).length;
   const pendingRequests = repository.getRedemptionRequests({ status: 'pending' });
   const pendingExamNominations = repository.getExamNominations({ status: 'pending' });
-  const attentionCount = students.filter((s) => {
+  const attentionCount = officialStudents.filter((s) => {
     if (!s.active) return false;
     if (s.attentionReason || s.consecutiveAbsences >= 2 || s.daysWithoutLog >= 7) return true;
     const stats = repository.getStudentAttendanceStats(s.id);
@@ -118,8 +122,6 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
         </div>
       )}
 
-
-
       {/* Supervisor Welcome Hero Banner */}
       <div className="mb-4 relative overflow-hidden rounded-2xl bg-gradient-to-l from-[#064e45] via-[#0a6155] to-[#0f7d6e] text-white p-4 sm:p-5 shadow-lg shadow-teal-950/15 border border-teal-600/30 animate-fade-in">
         {/* Soft decorative background glows */}
@@ -149,10 +151,12 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
             </div>
           </div>
 
-          {/* Quick Pill: 9 Approved Quran Circles */}
+          {/* Quick Pill: Approved Quran Circles */}
           <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-white/10 backdrop-blur-xs border border-white/15 px-3 py-1.5 rounded-xl text-xs text-white">
             <span className="text-amber-300 text-sm">🕌</span>
-            <span className="font-bold text-teal-100">9 حلقات قرآنية معتمدة · {students.filter((s) => s.active).length} طالباً</span>
+            <span className="font-bold text-teal-100 tabular-nums">
+              {circles.length} حلقات قرآنية معتمدة · {activeStudentsCount} طالباً
+            </span>
           </div>
         </div>
       </div>
@@ -161,28 +165,36 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
       <div className="hidden md:flex items-center gap-1 bg-white p-1 rounded-2xl border border-slate-200 shadow-xs mb-4">
         <button
           onClick={() => setActiveTab('attention')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === 'attention' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>صفحة المتابعة ({attentionCount})</span>
+          <span className="tabular-nums">صفحة المتابعة ({attentionCount})</span>
         </button>
         <button
           onClick={() => setActiveTab('exam_requests')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 relative ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 relative cursor-pointer ${
             activeTab === 'exam_requests' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <BookOpen className="w-4 h-4" />
           <span>طلبات الاختبارات</span>
           {pendingExamNominations.length > 0 && (
-            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+            <span
+              className={`px-1.5 py-0.5 rounded-full text-[11px] font-black tabular-nums leading-none ${
+                activeTab === 'exam_requests'
+                  ? 'bg-amber-400 text-teal-950'
+                  : 'bg-amber-100 text-amber-900 border border-amber-300'
+              }`}
+            >
+              {pendingExamNominations.length}
+            </span>
           )}
         </button>
         <button
           onClick={() => setActiveTab('stats')}
-          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === 'stats' ? 'bg-teal-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
@@ -204,14 +216,14 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
       </div>
 
       {/* Views */}
-      {activeTab === 'attention' && <NeedsAttentionList students={students} />}
+      {activeTab === 'attention' && <NeedsAttentionList students={officialStudents} />}
       {activeTab === 'exam_requests' && (
         <ExamRequestsManager
           supervisorName={currentUser.name}
           onUpdate={() => setTick((t) => t + 1)}
         />
       )}
-      {activeTab === 'stats' && <SupervisorStats students={students} />}
+      {activeTab === 'stats' && <SupervisorStats students={officialStudents} />}
       {activeTab === 'redemptions' && (
         <RedemptionManager supervisorName={currentUser.name} onUpdate={() => setTick((t) => t + 1)} />
       )}

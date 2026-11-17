@@ -275,8 +275,14 @@ export function groupTransactionsByDay(
           label = 'استبدال مكافأة';
           badgeClass = 'bg-rose-50 text-rose-800 border-rose-200';
         } else if (tx.type === 'admin_bonus') {
-          label = 'مكافأة إدارية';
-          badgeClass = 'bg-amber-50 text-amber-800 border-amber-200';
+          label = 'إضافة إدارية';
+          badgeClass = 'bg-emerald-50 text-emerald-800 border-emerald-200';
+        } else if (tx.type === 'admin_correction') {
+          label = amt >= 0 ? 'تعديل إداري' : 'خصم إداري';
+          badgeClass =
+            amt >= 0
+              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              : 'bg-rose-50 text-rose-800 border-rose-200';
         }
         if (!catMap[label]) {
           catMap[label] = { label, amount: 0, type: tx.type, badgeClass };
@@ -303,8 +309,14 @@ export function groupTransactionsByDay(
           label = 'استبدال مكافأة';
           badgeClass = 'bg-rose-50 text-rose-800 border-rose-200';
         } else if (tx.type === 'admin_bonus') {
-          label = 'مكافأة إدارية';
-          badgeClass = 'bg-amber-50 text-amber-800 border-amber-200';
+          label = 'إضافة إدارية';
+          badgeClass = 'bg-emerald-50 text-emerald-800 border-emerald-200';
+        } else if (tx.type === 'admin_correction') {
+          label = amt >= 0 ? 'تعديل إداري' : 'خصم إداري';
+          badgeClass =
+            amt >= 0
+              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              : 'bg-rose-50 text-rose-800 border-rose-200';
         }
         if (!catMap[label]) {
           catMap[label] = { label, amount: 0, type, badgeClass };
@@ -315,24 +327,39 @@ export function groupTransactionsByDay(
 
     const chips = Object.values(catMap);
 
-    // Build clean concise one-line summary
+    // Build clean concise one-line summary (surfaces written admin adjustment reasons to the student)
+    const adminTxSummaries = additionalTransactions
+      .filter((t) => t.type === 'admin_bonus' || t.type === 'admin_correction')
+      .map((t) => {
+        const amt = Number(t.amount) || 0;
+        const sign = amt > 0 ? `+${amt}` : `${amt}`;
+        const cleanReason = (t.reason || '').trim();
+        return cleanReason ? `${cleanReason} (${sign})` : `${amt >= 0 ? 'إضافة إدارية' : 'خصم إداري'} (${sign})`;
+      });
+
     let conciseSummary = '';
     if (evaluationBreakdown) {
       const evalPts = evaluationTotal ?? evaluationBreakdown.reduce((s, c) => s + c.points, 0);
       const addPts = additionalTransactions.reduce((s, t) => s + (Number(t.amount) || 0), 0);
       const parts: string[] = [`التقييم ${evalPts}/10`];
-      if (additionalTransactions.length > 0) {
+      if (adminTxSummaries.length > 0) {
+        parts.push(adminTxSummaries.join(' · '));
+      } else if (additionalTransactions.length > 0) {
         parts.push(`عمليات إضافية ${addPts >= 0 ? `+${addPts}` : addPts}`);
       }
       conciseSummary = parts.join(' · ');
+    } else if (adminTxSummaries.length > 0 && adminTxSummaries.length === txList.length) {
+      conciseSummary = adminTxSummaries.join(' · ');
     } else {
       const chipSummaries: string[] = [];
       chips.forEach((c) => {
+        if (c.type === 'admin_bonus' || c.type === 'admin_correction') return;
         const sign = c.amount > 0 ? `+${c.amount}` : `${c.amount}`;
         chipSummaries.push(`${c.label} (${sign})`);
       });
+      const combined = [...chipSummaries, ...adminTxSummaries];
       conciseSummary =
-        chipSummaries.length > 0 ? chipSummaries.join(' · ') : txList[0]?.reason || 'سجل نقاط اليوم';
+        combined.length > 0 ? combined.join(' · ') : txList[0]?.reason || 'سجل نقاط اليوم';
     }
 
     // Unique list of teachers/creators

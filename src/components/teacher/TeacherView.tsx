@@ -100,7 +100,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
         id: 'circle_othman',
         name: 'حلقة عثمان بن عفّان',
         teacherName: 'سيد نقيب الله',
-        teacherId: 'rJeGonuG4IW2tPIOREi8E6dR6mq1',
+        teacherId: 'a1Mc0gxwTJeBTs0znMfT717Mzvv1',
         schedule: 'الأحد إلى الأربعاء (بعد العصر)',
         studentCount: 23,
         room: 'جامع زهية لنجاوي - ركن عثمان بن عفان',

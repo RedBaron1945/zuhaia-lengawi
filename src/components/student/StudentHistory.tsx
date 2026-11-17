@@ -321,11 +321,22 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
                             {additionalTxs.map((tx) => (
                               <div
                                 key={tx.id}
-                                className="flex items-center justify-between py-2 text-xs"
+                                className="flex items-start justify-between gap-3 py-2 text-xs"
                               >
-                                <span className="font-medium text-slate-700 line-clamp-1">
-                                  {tx.reason}
-                                </span>
+                                <div className="min-w-0">
+                                  {(tx.type === 'admin_bonus' || tx.type === 'admin_correction') && (
+                                    <span
+                                      className={`block text-[10px] font-bold mb-0.5 ${
+                                        tx.amount >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                                      }`}
+                                    >
+                                      {tx.amount >= 0 ? 'إضافة إدارية' : 'خصم إداري'}
+                                    </span>
+                                  )}
+                                  <span className="font-medium text-slate-800 leading-relaxed break-words">
+                                    {tx.reason}
+                                  </span>
+                                </div>
                                 <span
                                   dir="ltr"
                                   className={`font-black tabular-nums text-xs shrink-0 ${getPointsColor(
@@ -348,9 +359,9 @@ export const StudentHistory: React.FC<StudentHistoryProps> = ({ studentId }) => 
                             {group.transactions.map((tx) => (
                               <div
                                 key={tx.id}
-                                className="flex items-center justify-between py-2 text-xs"
+                                className="flex items-start justify-between gap-3 py-2 text-xs"
                               >
-                                <span className="font-medium text-slate-700 line-clamp-1">
+                                <span className="font-medium text-slate-800 leading-relaxed break-words">
                                   {tx.reason}
                                 </span>
                                 <span

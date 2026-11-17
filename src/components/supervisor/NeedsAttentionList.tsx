@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Student } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
@@ -15,40 +15,113 @@ import {
   GraduationCap,
   Users as UsersIcon,
   Trophy,
-  Filter,
-  Info,
   ChevronDown,
+  AlertTriangle,
+  RotateCcw,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  CalendarDays,
 } from 'lucide-react';
+import { StudentPointsLogModal } from '../common/StudentPointsLogModal';
 import { calculateAge } from '../../utils/dateUtils';
 
 interface NeedsAttentionListProps {
   students: Student[];
 }
 
+type SortBy = 'points' | 'attendance' | 'absences';
+type SortDir = 'desc' | 'asc';
+
+const PAGE_SIZE = 25;
+
+const VALID_SORTS: SortBy[] = ['points', 'attendance', 'absences'];
+
 export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students }) => {
-  const [search, setSearch] = useState('');
-  const [circleFilter, setCircleFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'perfect' | 'has_absences'>('all');
-  const [sortBy, setSortBy] = useState<'attendance' | 'absences' | 'points' | 'rate'>('attendance');
-  const [visibleCount, setVisibleCount] = useState(20);
-  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
-  const [showRubricInfo, setShowRubricInfo] = useState(false);
+  const circles = useMemo(() => repository.getCircles(), []);
+  const validCircleIds = useMemo(() => new Set(circles.map((c) => c.id)), [circles]);
+
+  // Read initial filters/sort from URL query string
+  const readInitialState = () => {
+    if (typeof window === 'undefined') {
+      return {
+        search: '',
+        circleFilter: 'all',
+        sortBy: 'points' as SortBy,
+        sortDir: 'desc' as SortDir,
+      };
+    }
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q') || '';
+    const rawCircle = params.get('circle') || 'all';
+    const circleFilter = rawCircle !== 'all' && validCircleIds.has(rawCircle) ? rawCircle : 'all';
+    const rawSort = params.get('sort') as SortBy | null;
+    const sortBy: SortBy = rawSort && VALID_SORTS.includes(rawSort) ? rawSort : 'points';
+    const rawDir = params.get('dir');
+    const sortDir: SortDir = rawDir === 'asc' ? 'asc' : 'desc';
+
+    return {
+      search: q,
+      circleFilter,
+      sortBy,
+      sortDir,
+    };
+  };
+
+  const initial = useMemo(readInitialState, [validCircleIds]);
+
+  const [search, setSearch] = useState<string>(initial.search);
+  const [circleFilter, setCircleFilter] = useState<string>(initial.circleFilter);
+  const [sortBy, setSortBy] = useState<SortBy>(initial.sortBy);
+  const [sortDir, setSortDir] = useState<SortDir>(initial.sortDir);
+  const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
 
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [pointsLogStudent, setPointsLogStudent] = useState<Student | null>(null);
   const [showNationalId, setShowNationalId] = useState(false);
   const [editingNote, setEditingNote] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const { showToast } = useToast();
 
-  const circles = repository.getCircles();
   const activeStudents = useMemo(() => students.filter((s) => s.active), [students]);
 
-  // Reset pagination on filter or sort change
+  // Sync filters & sort to URL without disturbing unrelated params
   useEffect(() => {
-    setVisibleCount(20);
-  }, [search, circleFilter, statusFilter, sortBy]);
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
 
-  // Pre-calculate attendance stats for each student
+    if (search.trim()) params.set('q', search.trim());
+    else params.delete('q');
+
+    if (circleFilter !== 'all') params.set('circle', circleFilter);
+    else params.delete('circle');
+
+    if (sortBy !== 'points') params.set('sort', sortBy);
+    else params.delete('sort');
+
+    if (sortDir !== 'desc') params.set('dir', sortDir);
+    else params.delete('dir');
+
+    // Clean up obsolete filter params if present in older links
+    params.delete('circles');
+    params.delete('status');
+    params.delete('flagged');
+    params.delete('period');
+
+    const nextSearch = params.toString();
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl !== currentUrl) {
+      window.history.replaceState(null, '', nextUrl);
+    }
+  }, [search, circleFilter, sortBy, sortDir]);
+
+  // Reset pagination whenever filters/sort change
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [search, circleFilter, sortBy, sortDir]);
+
+  // Pre-calculate attendance stats for each active student
   const studentStatsMap = useMemo(() => {
     const map = new Map<string, ReturnType<typeof repository.getStudentAttendanceStats>>();
     activeStudents.forEach((s) => {
@@ -57,153 +130,196 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
     return map;
   }, [activeStudents]);
 
-  // Helper to determine student follow-up flags
-  const getStudentFlag = (student: Student) => {
-    const attStats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
+  const getStudentFlag = useCallback(
+    (student: Student) => {
+      const attStats =
+        studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
 
-    if (student.attentionReason) {
-      return {
-        isFlagged: true,
-        type: 'custom' as const,
-        label: student.attentionReason,
-        badge: 'ملاحظة خاصة',
-      };
-    }
-    if (student.consecutiveAbsences >= 2) {
-      return {
-        isFlagged: true,
-        type: 'absent' as const,
-        label: `غياب متكرر (${student.consecutiveAbsences} أيام متتالية)`,
-        badge: 'كثرة غياب',
-      };
-    }
-    if (student.daysWithoutLog >= 7) {
-      return {
-        isFlagged: true,
-        type: 'inactive' as const,
-        label: `انقطاع عن التسميع منذ ${student.daysWithoutLog} أيام`,
-        badge: 'انقطاع تسميع',
-      };
-    }
-    if (attStats.hasRecords && attStats.attendanceRate < 70) {
-      return {
-        isFlagged: true,
-        type: 'low_attendance' as const,
-        label: `انخفاض نسبة الحضور (${attStats.attendanceRate}%)`,
-        badge: 'حضور منخفض',
-      };
-    }
-    return {
-      isFlagged: false,
-      type: 'regular' as const,
-      label: 'منتظم وبحالة انضباط ممتازة',
-      badge: 'منتظم',
-    };
-  };
-
-  // Overall Center Statistics for chosen period
-  const overallStats = useMemo(() => {
-    let totalPresent = 0;
-    let totalAbsent = 0;
-    let studentsWithAbsences = 0;
-    let perfectStudents = 0;
-    let flaggedCount = 0;
-
-    activeStudents.forEach((s) => {
-      const stats = studentStatsMap.get(s.id);
-      if (stats) {
-        totalPresent += stats.presentDays;
-        totalAbsent += stats.absentDays;
-        if (stats.absentDays > 0) studentsWithAbsences++;
-        if (stats.hasRecords && stats.attendanceRate >= 90) perfectStudents++;
+      if (student.attentionReason) {
+        return {
+          isFlagged: true,
+          type: 'custom' as const,
+          label: student.attentionReason,
+          badge: 'ملاحظة خاصة',
+        };
       }
-      if (getStudentFlag(s).isFlagged) {
-        flaggedCount++;
+      if (student.consecutiveAbsences >= 2) {
+        return {
+          isFlagged: true,
+          type: 'absent' as const,
+          label: `غياب متكرر (${student.consecutiveAbsences} أيام متتالية)`,
+          badge: 'كثرة غياب',
+        };
       }
+      if (student.daysWithoutLog >= 7) {
+        return {
+          isFlagged: true,
+          type: 'inactive' as const,
+          label: `انقطاع عن التسميع منذ ${student.daysWithoutLog} أيام`,
+          badge: 'انقطاع تسميع',
+        };
+      }
+      if (attStats.hasRecords && attStats.attendanceRate < 70) {
+        return {
+          isFlagged: true,
+          type: 'low_attendance' as const,
+          label: `انخفاض نسبة الحضور (${attStats.attendanceRate}%)`,
+          badge: 'حضور منخفض',
+        };
+      }
+      return {
+        isFlagged: false,
+        type: 'regular' as const,
+        label: 'منتظم وبحالة انضباط ممتازة',
+        badge: 'منتظم',
+      };
+    },
+    [studentStatsMap]
+  );
+
+  // Filter and sort students with directional toggle (desc / asc)
+  const rankedStudents = useMemo(() => {
+    const q = search.trim();
+    const filtered = activeStudents.filter((s) => {
+      if (circleFilter !== 'all' && s.circleId !== circleFilter) return false;
+      if (q && !s.name.includes(q)) return false;
+      return true;
     });
 
-    const totalDaysRecorded = totalPresent + totalAbsent;
-    const overallRate = totalDaysRecorded > 0 ? Math.round((totalPresent / totalDaysRecorded) * 100) : 0;
+    const dirFactor = sortDir === 'desc' ? 1 : -1;
 
-    return {
-      totalStudents: activeStudents.length,
-      totalPresentDays: totalPresent,
-      totalAbsentDays: totalAbsent,
-      overallRate,
-      studentsWithAbsences,
-      perfectStudents,
-      flaggedCount,
-      hasRecords: totalDaysRecorded > 0,
-    };
-  }, [activeStudents, studentStatsMap]);
+    return [...filtered].sort((a, b) => {
+      const statsA = studentStatsMap.get(a.id);
+      const statsB = studentStatsMap.get(b.id);
+      const presentA = statsA?.presentDays || 0;
+      const presentB = statsB?.presentDays || 0;
+      const absentA = statsA?.absentDays || 0;
+      const absentB = statsB?.absentDays || 0;
+      const rateA = statsA?.hasRecords ? statsA.attendanceRate : 0;
+      const rateB = statsB?.hasRecords ? statsB.attendanceRate : 0;
 
-  // Filter and sort students
-  const rankedStudents = useMemo(() => {
-    return activeStudents
-      .filter((s) => (circleFilter === 'all' ? true : s.circleId === circleFilter))
-      .filter((s) => (search ? s.name.includes(search) : true))
-      .filter((s) => {
-        const stats = studentStatsMap.get(s.id);
-        if (statusFilter === 'perfect') {
-          return stats?.hasRecords && stats.attendanceRate >= 90;
+      if (sortBy === 'points') {
+        if (b.currentPoints !== a.currentPoints) {
+          return (b.currentPoints - a.currentPoints) * dirFactor;
         }
-        if (statusFilter === 'has_absences') {
-          return (stats?.absentDays || 0) > 0;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        const statsA = studentStatsMap.get(a.id);
-        const statsB = studentStatsMap.get(b.id);
-        const presentA = statsA?.presentDays || 0;
-        const presentB = statsB?.presentDays || 0;
-        const absentA = statsA?.absentDays || 0;
-        const absentB = statsB?.absentDays || 0;
-        const rateA = statsA?.attendanceRate || 0;
-        const rateB = statsB?.attendanceRate || 0;
+        if (rateB !== rateA) return rateB - rateA;
+        if (presentB !== presentA) return presentB - presentA;
+        return a.name.localeCompare(b.name, 'ar');
+      }
 
-        if (sortBy === 'attendance') {
-          if (presentB !== presentA) return presentB - presentA;
-          if (rateB !== rateA) return rateB - rateA;
-          return b.currentPoints - a.currentPoints;
+      if (sortBy === 'attendance') {
+        if (presentB !== presentA) {
+          return (presentB - presentA) * dirFactor;
         }
-        if (sortBy === 'absences') {
-          if (absentB !== absentA) return absentB - absentA;
-          if (rateA !== rateB) return rateA - rateB;
-          return a.currentPoints - b.currentPoints;
-        }
-        if (sortBy === 'points') {
-          if (b.currentPoints !== a.currentPoints) return b.currentPoints - a.currentPoints;
-          return presentB - presentA;
-        }
-        if (sortBy === 'rate') {
-          if (rateB !== rateA) return rateB - rateA;
-          return presentB - presentA;
-        }
-        return 0;
-      });
-  }, [activeStudents, circleFilter, search, statusFilter, sortBy, studentStatsMap]);
+        if (rateB !== rateA) return rateB - rateA;
+        if (b.currentPoints !== a.currentPoints) return b.currentPoints - a.currentPoints;
+        return a.name.localeCompare(b.name, 'ar');
+      }
 
-  // Metric value display function for podium (single clean number)
-  const getSingleMetricNumber = (stats: any, s: Student) => {
-    switch (sortBy) {
-      case 'attendance':
-        return `${stats.presentDays} يوم`;
-      case 'points':
-        return `${s.currentPoints} نقطة`;
-      case 'rate':
-        return stats.hasRecords ? `${stats.attendanceRate}%` : '0%';
-      case 'absences':
-        return `${stats.absentDays} غياب`;
+      // absences
+      if (absentB !== absentA) {
+        return (absentB - absentA) * dirFactor;
+      }
+      if (rateA !== rateB) return rateA - rateB;
+      if (a.currentPoints !== b.currentPoints) return a.currentPoints - b.currentPoints;
+      return a.name.localeCompare(b.name, 'ar');
+    });
+  }, [activeStudents, circleFilter, search, sortBy, sortDir, studentStatsMap]);
+
+  // Podium Logic:
+  // Shown only for descending merit sorts (points / attendance) when not searching and data is strong & non-tied.
+  const podiumAnalysis = useMemo(() => {
+    const isMeritSort = sortDir === 'desc' && (sortBy === 'points' || sortBy === 'attendance');
+    if (search.trim() || !isMeritSort || rankedStudents.length < 3) {
+      return { showPodium: false, entries: [] as { student: Student; isTied: boolean }[] };
     }
-  };
 
-  // Top 3 Podium
-  const showPodium = !search && rankedStudents.length >= 3;
-  const podiumStudents = showPodium ? rankedStudents.slice(0, 3) : [];
+    const top3 = rankedStudents.slice(0, 3);
+    const tuples = top3.map((s) => {
+      const st = studentStatsMap.get(s.id) || repository.getStudentAttendanceStats(s.id);
+      if (sortBy === 'points') {
+        return {
+          primary: s.currentPoints,
+          secondary: st.hasRecords ? st.attendanceRate : 0,
+          tertiary: st.presentDays,
+          hasData: s.currentPoints > 0,
+        };
+      }
+      return {
+        primary: st.presentDays,
+        secondary: st.hasRecords ? st.attendanceRate : 0,
+        tertiary: s.currentPoints,
+        hasData: st.hasRecords && st.presentDays > 0,
+      };
+    });
+
+    if (tuples.some((t) => !t.hasData)) {
+      return { showPodium: false, entries: [] };
+    }
+
+    const allThreeCompletelyTied =
+      tuples[0].primary === tuples[1].primary &&
+      tuples[1].primary === tuples[2].primary &&
+      tuples[0].secondary === tuples[1].secondary &&
+      tuples[1].secondary === tuples[2].secondary &&
+      tuples[0].tertiary === tuples[1].tertiary &&
+      tuples[1].tertiary === tuples[2].tertiary;
+
+    if (allThreeCompletelyTied) {
+      return { showPodium: false, entries: [] };
+    }
+
+    const entries = top3.map((student, idx) => {
+      const p = tuples[idx].primary;
+      const primaryTieCount = tuples.filter((t) => t.primary === p).length;
+      return {
+        student,
+        isTied: primaryTieCount > 1,
+      };
+    });
+
+    return { showPodium: true, entries };
+  }, [search, sortBy, sortDir, rankedStudents, studentStatsMap]);
+
+  const showPodium = podiumAnalysis.showPodium;
   const listStudents = showPodium ? rankedStudents.slice(3) : rankedStudents;
   const paginatedStudents = listStudents.slice(0, visibleCount);
   const rankOffset = showPodium ? 4 : 1;
+
+  const getPodiumMetricLabel = (s: Student) => {
+    const stats = studentStatsMap.get(s.id) || repository.getStudentAttendanceStats(s.id);
+    if (sortBy === 'attendance') {
+      return `${stats.presentDays} يوم حضور · ${s.currentPoints} ن`;
+    }
+    return `${s.currentPoints} نقطة · حضور ${stats.presentDays}`;
+  };
+
+  const hasAnyActiveFilter = search.trim().length > 0 || circleFilter !== 'all';
+
+  const clearAllFilters = () => {
+    setSearch('');
+    setCircleFilter('all');
+  };
+
+  const handleSortColumn = (field: SortBy) => {
+    if (sortBy === field) {
+      setSortDir((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortBy(field);
+      setSortDir('desc');
+    }
+  };
+
+  const renderSortIcon = (field: SortBy) => {
+    if (sortBy !== field) {
+      return <ArrowUpDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
+    }
+    return sortDir === 'asc' ? (
+      <ArrowUp className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+    ) : (
+      <ArrowDown className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+    );
+  };
 
   const handleOpenStudentModal = (student: Student) => {
     setSelectedStudent(student);
@@ -277,83 +393,14 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
     return base.slice(0, 4) + '****' + base.slice(-2);
   };
 
+  const selectedCircle = circles.find((c) => c.id === circleFilter);
+  const selectedCircleLabel = selectedCircle ? `${selectedCircle.name} · ${selectedCircle.teacherName}` : '';
+
   return (
     <div className="space-y-3 pb-28 select-text">
-      {/* (5) Compact Statistics Line / 2 Cards (Shown ONLY when data exists) with ⓘ info button */}
-      {overallStats.hasRecords && (
-        <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-              <span>إحصائيات الانضباط</span>
-              <span className="text-[10px] text-slate-400 font-medium">
-                (التراكمي)
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setShowRubricInfo((prev) => !prev)}
-              className="text-slate-400 hover:text-teal-700 p-1 rounded-md transition-colors cursor-pointer"
-              title="معيار الرصد"
-            >
-              <Info className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* ⓘ Rubric explanation popup / banner */}
-          {showRubricInfo && (
-            <div className="bg-teal-50 border border-teal-200 rounded-lg p-2 text-[11px] text-teal-900 font-medium flex items-center justify-between animate-fade-in">
-              <span>قاعدة الرصد التلقائي: 2 أو 1 = حاضر · 0 = غائب</span>
-              <button
-                type="button"
-                onClick={() => setShowRubricInfo(false)}
-                className="text-teal-600 hover:text-teal-800"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-
-          {/* 2 Compact Summary Cards */}
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            {/* Presence & Rate Card */}
-            <div className="bg-emerald-50/70 p-2 rounded-xl border border-emerald-200/80 flex items-center justify-between">
-              <div>
-                <span className="text-[10px] text-emerald-800 font-bold block">مجموع الحضور</span>
-                <span className="text-xs sm:text-sm font-black text-emerald-950 tabular-nums">
-                  {overallStats.totalPresentDays} يوم
-                </span>
-              </div>
-              <div className="text-left">
-                <span className="text-[10px] text-emerald-700 font-bold block">الانضباط</span>
-                <span className="text-xs font-black text-emerald-900 tabular-nums">
-                  {overallStats.overallRate}%
-                </span>
-              </div>
-            </div>
-
-            {/* Absence & Flagged Card */}
-            <div className="bg-rose-50/70 p-2 rounded-xl border border-rose-200/80 flex items-center justify-between">
-              <div>
-                <span className="text-[10px] text-rose-800 font-bold block">مجموع الغياب</span>
-                <span className="text-xs sm:text-sm font-black text-rose-950 tabular-nums">
-                  {overallStats.totalAbsentDays} يوم
-                </span>
-              </div>
-              <div className="text-left">
-                <span className="text-[10px] text-amber-700 font-bold block">تنبيهات</span>
-                <span className="text-xs font-black text-amber-900 tabular-nums">
-                  {overallStats.flaggedCount}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* (6) Search + Filter Button Row & Equal-Width Segment Pills */}
-      <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs space-y-2">
-        <div className="flex items-center gap-2">
-          {/* Search Input */}
+      {/* Simple Search + Circle Name Dropdown Filter Bar */}
+      <div className="bg-white rounded-2xl p-3 border border-slate-200/90 shadow-2xs space-y-2.5">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
           <div className="relative flex-1 min-w-0">
             <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
             <input
@@ -361,78 +408,81 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="بحث باسم الطالب..."
-              className="w-full pr-9 pl-8 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-hidden focus:border-teal-600 min-h-[38px] placeholder:text-slate-400 font-medium"
+              className="w-full pr-9 pl-8 py-2 text-xs sm:text-[13px] rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-hidden focus:border-teal-600 min-h-[40px] placeholder:text-slate-400 font-medium"
             />
             {search && (
               <button
+                type="button"
                 onClick={() => setSearch('')}
                 className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                aria-label="مسح البحث"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          {/* Filter Sheet Trigger Button */}
-          <button
-            type="button"
-            onClick={() => setIsFilterSheetOpen(true)}
-            className={`px-3 py-2 rounded-xl text-xs font-bold border flex items-center gap-1.5 shrink-0 min-h-[38px] transition-colors cursor-pointer ${
-              circleFilter !== 'all' || sortBy !== 'attendance'
-                ? 'bg-teal-700 text-white border-teal-800 shadow-2xs'
-                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-            }`}
-            title="تصفية وخيارات الترتيب"
+          <select
+            value={circleFilter}
+            onChange={(e) => setCircleFilter(e.target.value)}
+            aria-label="تصفية حسب الحلقة"
+            className="sm:w-72 px-3 py-2 text-xs sm:text-[13px] rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold min-h-[40px] cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600 shrink-0"
           >
-            <Filter className="w-3.5 h-3.5" />
-            <span>تصفية</span>
-            {(circleFilter !== 'all' || sortBy !== 'attendance') && (
-              <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
-            )}
-          </button>
+            <option value="all">جميع الحلقات</option>
+            {circles.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} · {c.teacherName}
+              </option>
+            ))}
+          </select>
         </div>
 
-        {/* Equal-Width Status Segments (الكل / منتظمون / لديهم غياب) without horizontal scrollbar */}
-        <div className="grid grid-cols-3 gap-1.5 w-full text-xs">
-          <button
-            type="button"
-            onClick={() => setStatusFilter('all')}
-            className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-              statusFilter === 'all'
-                ? 'bg-teal-700 text-white border-teal-800 shadow-2xs'
-                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-            }`}
-          >
-            الكل ({activeStudents.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setStatusFilter('perfect')}
-            className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-              statusFilter === 'perfect'
-                ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                : 'bg-emerald-50/70 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
-            }`}
-          >
-            منتظمون ({overallStats.perfectStudents})
-          </button>
-          <button
-            type="button"
-            onClick={() => setStatusFilter('has_absences')}
-            className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-              statusFilter === 'has_absences'
-                ? 'bg-rose-600 text-white border-rose-700 shadow-2xs'
-                : 'bg-rose-50/70 text-rose-900 border-rose-200 hover:bg-rose-100'
-            }`}
-          >
-            لديهم غياب ({overallStats.studentsWithAbsences})
-          </button>
-        </div>
+        {/* Active Filter Summary when searching or selecting a circle */}
+        {hasAnyActiveFilter && (
+          <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {search.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-50 text-teal-900 border border-teal-200 text-[11px] font-bold hover:bg-teal-100 cursor-pointer"
+                >
+                  <span>بحث: {search.trim()}</span>
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+
+              {circleFilter !== 'all' && selectedCircleLabel && (
+                <button
+                  type="button"
+                  onClick={() => setCircleFilter('all')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-50 text-teal-900 border border-teal-200 text-[11px] font-bold hover:bg-teal-100 cursor-pointer"
+                >
+                  <span>الحلقة: {selectedCircleLabel}</span>
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2.5 mr-auto">
+              <span className="text-[11px] font-bold text-slate-600 tabular-nums">
+                عرض {rankedStudents.length} من {activeStudents.length}
+              </span>
+              <button
+                type="button"
+                onClick={clearAllFilters}
+                className="text-[11px] font-extrabold text-rose-700 hover:text-rose-900 underline cursor-pointer"
+              >
+                مسح الكل
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* (7) & (10) Podium: Three Equal-Width Cards (Medal + 2-line Name + Single Number) WITHOUT Text Badges */}
+      {/* Top 3 Podium */}
       {showPodium && (
-        <div className="space-y-2 pt-1 pb-1">
+        <div className="space-y-2 pt-0.5">
           <div className="flex items-center justify-between px-1">
             <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
               <Trophy className="w-4 h-4 text-amber-500" />
@@ -441,306 +491,346 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
           </div>
 
           <div className="grid grid-cols-3 gap-2 w-full items-stretch">
-            {/* Rank 2 (Silver) */}
-            {(() => {
-              const student = podiumStudents[1];
-              const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
-              return (
-                <div
-                  key={student.id}
-                  onClick={() => handleOpenStudentModal(student)}
-                  className="bg-white rounded-xl p-2.5 border border-slate-200/90 hover:border-teal-400 text-center flex flex-col items-center justify-between shadow-2xs cursor-pointer transition-all min-h-[110px]"
-                >
-                  <span className="text-2xl mb-1">🥈</span>
-                  <span className="text-xs font-bold text-slate-900 line-clamp-2 text-center min-h-[2.2rem] leading-snug">
-                    {student.name}
-                  </span>
-                  <span className="text-xs font-black text-teal-800 tabular-nums mt-1">
-                    {getSingleMetricNumber(stats, student)}
-                  </span>
-                </div>
-              );
-            })()}
+            {[1, 0, 2].map((podiumIdx) => {
+              const entry = podiumAnalysis.entries[podiumIdx];
+              const student = entry.student;
+              const circle = circles.find((c) => c.id === student.circleId);
+              const isGold = podiumIdx === 0;
+              const medal = podiumIdx === 0 ? '🥇' : podiumIdx === 1 ? '🥈' : '🥉';
 
-            {/* Rank 1 (Gold) */}
-            {(() => {
-              const student = podiumStudents[0];
-              const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
               return (
                 <div
                   key={student.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleOpenStudentModal(student)}
-                  className="bg-gradient-to-b from-amber-50/70 to-white rounded-xl p-2.5 border-2 border-amber-300 hover:border-amber-400 text-center flex flex-col items-center justify-between shadow-2xs cursor-pointer transition-all min-h-[110px]"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleOpenStudentModal(student);
+                    }
+                  }}
+                  className={`rounded-xl p-2.5 text-center flex flex-col items-center justify-between cursor-pointer transition-all min-h-[124px] ${
+                    isGold
+                      ? 'bg-gradient-to-b from-amber-50/80 to-white border-2 border-amber-300 hover:border-amber-400 shadow-2xs'
+                      : 'bg-white border border-slate-200/90 hover:border-teal-400 shadow-2xs'
+                  }`}
                 >
-                  <span className="text-2xl mb-1">🥇</span>
-                  <span className="text-xs font-black text-slate-900 line-clamp-2 text-center min-h-[2.2rem] leading-snug">
-                    {student.name}
-                  </span>
-                  <span className="text-xs sm:text-sm font-black text-amber-900 tabular-nums mt-1">
-                    {getSingleMetricNumber(stats, student)}
-                  </span>
-                </div>
-              );
-            })()}
+                  <div className="flex items-center justify-center gap-1 mb-1">
+                    <span className="text-xl leading-none">{medal}</span>
+                    {entry.isTied && (
+                      <span className="px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-200 text-[10px] font-black leading-none">
+                        تعادل
+                      </span>
+                    )}
+                  </div>
 
-            {/* Rank 3 (Bronze) */}
-            {(() => {
-              const student = podiumStudents[2];
-              const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
-              return (
-                <div
-                  key={student.id}
-                  onClick={() => handleOpenStudentModal(student)}
-                  className="bg-white rounded-xl p-2.5 border border-slate-200/90 hover:border-teal-400 text-center flex flex-col items-center justify-between shadow-2xs cursor-pointer transition-all min-h-[110px]"
-                >
-                  <span className="text-2xl mb-1">🥉</span>
-                  <span className="text-xs font-bold text-slate-900 line-clamp-2 text-center min-h-[2.2rem] leading-snug">
+                  <span className="text-xs font-extrabold text-slate-900 line-clamp-2 text-center leading-snug w-full">
                     {student.name}
                   </span>
-                  <span className="text-xs font-black text-teal-800 tabular-nums mt-1">
-                    {getSingleMetricNumber(stats, student)}
+
+                  <span className="text-[11px] text-slate-500 font-medium truncate w-full mt-0.5">
+                    {circle?.name || 'عامة'}
+                  </span>
+
+                  <span
+                    className={`text-[11px] font-black tabular-nums mt-1.5 ${
+                      isGold ? 'text-amber-900' : 'text-teal-800'
+                    }`}
+                  >
+                    {getPodiumMetricLabel(student)}
                   </span>
                 </div>
               );
-            })()}
+            })}
           </div>
         </div>
       )}
 
-      {/* (2) & (3) Student Rows: Name wraps without cut, circle underneath in gray, حضور N · غياب N (no zeroes, no (-)), color rules */}
+      {/* Student List: Empty State, Desktop Table with Sort Arrows, Mobile 2-Line Cards + Sort Bar */}
       {rankedStudents.length === 0 ? (
-        <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-400 text-xs font-medium space-y-1">
-          <p className="font-bold text-slate-600">لا يوجد طلاب يطابقون شروط البحث أو التصفية الحالية.</p>
-          <p className="text-[11px] text-slate-400">يمكنك تبديل التصفية لعرض «الكل» أو تغيير الحلقة.</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {showPodium && listStudents.length > 0 && (
-            <div className="px-1 pt-1 text-xs font-black text-slate-500">
-              قائمة الطلاب ({listStudents.length}):
-            </div>
-          )}
-
-          {paginatedStudents.map((student, index) => {
-            const currentRank = rankOffset + index;
-            const circle = circles.find((c) => c.id === student.circleId);
-            const flag = getStudentFlag(student);
-            const stats = studentStatsMap.get(student.id) || repository.getStudentAttendanceStats(student.id);
-
-            return (
-              <div
-                key={student.id}
-                onClick={() => handleOpenStudentModal(student)}
-                className={`bg-white rounded-xl p-3 border shadow-2xs hover:shadow-xs transition-all cursor-pointer flex items-center justify-between gap-3 select-text ${
-                  stats.absentDays >= 3
-                    ? 'border-rose-200/80 bg-rose-50/10'
-                    : flag.isFlagged
-                    ? 'border-amber-200/80 bg-amber-50/10'
-                    : 'border-slate-200/90 hover:border-teal-300'
-                }`}
-              >
-                <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                  {/* Rank Badge */}
-                  <div className="w-7 h-7 rounded-full bg-slate-100 border border-slate-200 text-slate-700 flex items-center justify-center font-black text-xs tabular-nums shrink-0 mt-0.5">
-                    #{currentRank}
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    {/* (2) Student name: full line non-truncated, wraps gracefully */}
-                    <h4 className="text-xs sm:text-sm font-bold text-slate-900 leading-snug break-words">
-                      {student.name}
-                    </h4>
-
-                    {/* (2) Circle name underneath in gray */}
-                    {circle?.name && (
-                      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                        {circle.name}
-                      </p>
-                    )}
-
-                    {/* (2) & (3) «حضور N · غياب N» بخط صغير، دون عرض الصفر ولا (–)، أخضر للحضور الفعلي وأحمر للغياب الفعلي */}
-                    <div className="mt-1 flex items-center gap-1.5 text-[11px] font-bold">
-                      {stats.hasRecords && (stats.presentDays > 0 || stats.absentDays > 0) ? (
-                        <>
-                          {stats.presentDays > 0 && (
-                            <span className="text-emerald-700 font-bold">حضور {stats.presentDays}</span>
-                          )}
-                          {stats.presentDays > 0 && stats.absentDays > 0 && (
-                            <span className="text-slate-300">·</span>
-                          )}
-                          {stats.absentDays > 0 && (
-                            <span className="text-rose-600 font-bold">غياب {stats.absentDays}</span>
-                          )}
-                          {stats.attendanceRate > 0 && (
-                            <span className="text-slate-400 font-medium text-[10px] tabular-nums">
-                              ({stats.attendanceRate}%)
-                            </span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-slate-400 text-[10px] font-medium">لا يوجد رصد مسجل</span>
-                      )}
-                    </div>
-
-                    {flag.isFlagged && (
-                      <div className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-md">
-                        <span>⚠️</span>
-                        <span>{flag.label}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Inspect Action */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenStudentModal(student);
-                  }}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-teal-700 hover:bg-slate-50 shrink-0 cursor-pointer"
-                  title="عرض بيانات الطالب"
-                >
-                  <Eye className="w-4 h-4" />
-                </button>
-              </div>
-            );
-          })}
-
-          {/* (9) Pagination: Show 20 initially with «عرض المزيد» */}
-          {listStudents.length > visibleCount && (
+        <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 space-y-3">
+          <p className="text-sm font-black text-slate-800">لا نتائج مطابقة للتصفية الحالية</p>
+          <p className="text-xs text-slate-500 font-medium">
+            جرّب تغيير البحث أو اختيار حلقة أخرى لعرض الطلاب.
+          </p>
+          {hasAnyActiveFilter && (
             <button
               type="button"
-              onClick={() => setVisibleCount((prev) => prev + 20)}
-              className="w-full py-2.5 rounded-xl bg-white border border-slate-200 text-teal-800 text-xs font-bold hover:bg-slate-50 shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors mt-2"
+              onClick={clearAllFilters}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold transition-colors cursor-pointer"
             >
-              <span>عرض المزيد ({listStudents.length - visibleCount} طالب متبقٍ)</span>
-              <ChevronDown className="w-3.5 h-3.5" />
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>مسح الكل</span>
             </button>
           )}
         </div>
-      )}
+      ) : (
+        <div className="space-y-2.5">
+          {/* Header with Total Count + Mobile Quick Sort Arrows */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1">
+            <span className="text-xs sm:text-[13px] font-black text-slate-700 tabular-nums">
+              قائمة الطلاب ({rankedStudents.length})
+            </span>
 
-      {/* (6) Bottom Sheet for Filters: Circle, Sort Order, Status */}
-      {isFilterSheetOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl max-w-md w-full border border-slate-200 shadow-2xl p-5 space-y-4 text-right animate-slide-up">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h3 className="text-sm font-black text-slate-900 flex items-center gap-1.5">
-                <Filter className="w-4 h-4 text-teal-700" />
-                <span>خيارات التصفية والترتيب</span>
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsFilterSheetOpen(false)}
-                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+            {showPodium && (
+              <span className="hidden md:inline text-[11px] text-slate-500 font-medium">
+                {listStudents.length > 0
+                  ? 'المراكز 1–3 معروضة في المنصة أعلاه'
+                  : 'الطلاب الثلاثة معروضون في المنصة أعلاه'}
+              </span>
+            )}
 
-            {/* Circle Selection */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-extrabold text-slate-700 block">
-                تصفية حسب الحلقة القرآنية:
-              </label>
-              <select
-                value={circleFilter}
-                onChange={(e) => setCircleFilter(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold min-h-[38px] shadow-2xs cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600"
-              >
-                <option value="all">جميع الحلقات ({circles.length})</option>
-                {circles.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.teacherName})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Sort By Selection */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-extrabold text-slate-700 block">
-                ترتيب الطلاب حسب:
-              </label>
-              <div className="relative">
-                <select
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value as any)}
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 text-teal-900 font-bold min-h-[38px] shadow-2xs cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600"
-                >
-                  <option value="attendance">الأكثر حضوراً</option>
-                  <option value="absences">الأكثر غياباً (للمتابعة)</option>
-                  <option value="rate">أعلى نسبة حضور (%)</option>
-                  <option value="points">الأعلى نقاطاً</option>
-                </select>
+            {/* Mobile Quick Sort Bar (mirrors desktop clickable table column arrows) */}
+            {listStudents.length > 0 && (
+              <div className="flex md:hidden items-center gap-1.5">
+                {(
+                  [
+                    { field: 'attendance' as SortBy, label: 'حضور' },
+                    { field: 'absences' as SortBy, label: 'غياب' },
+                    { field: 'points' as SortBy, label: 'نقاط' },
+                  ] as const
+                ).map(({ field, label }) => {
+                  const active = sortBy === field;
+                  return (
+                    <button
+                      key={field}
+                      type="button"
+                      onClick={() => handleSortColumn(field)}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-teal-50 text-teal-900 border-teal-300'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span>{label}</span>
+                      {renderSortIcon(field)}
+                    </button>
+                  );
+                })}
               </div>
-            </div>
-
-            {/* Status Filter Selection */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-extrabold text-slate-700 block">
-                الحالة:
-              </label>
-              <div className="grid grid-cols-3 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('all')}
-                  className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                    statusFilter === 'all'
-                      ? 'bg-teal-700 text-white border-teal-800 shadow-2xs'
-                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  الكل
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('perfect')}
-                  className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                    statusFilter === 'perfect'
-                      ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                      : 'bg-emerald-50/70 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
-                  }`}
-                >
-                  منتظمون
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('has_absences')}
-                  className={`py-2 px-1 text-center rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                    statusFilter === 'has_absences'
-                      ? 'bg-rose-600 text-white border-rose-700 shadow-2xs'
-                      : 'bg-rose-50/70 text-rose-900 border-rose-200 hover:bg-rose-100'
-                  }`}
-                >
-                  لديهم غياب
-                </button>
-              </div>
-            </div>
-
-            {/* Action buttons */}
-            <div className="pt-2 flex items-center gap-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => {
-                  setCircleFilter('all');
-                  setSortBy('attendance');
-                  setStatusFilter('all');
-                }}
-                className="px-3 py-2.5 rounded-xl bg-slate-100 text-slate-700 font-bold text-xs hover:bg-slate-200 transition-colors cursor-pointer"
-              >
-                إعادة ضبط
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsFilterSheetOpen(false)}
-                className="flex-1 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs"
-              >
-                تطبيق الفلاتر
-              </button>
-            </div>
+            )}
           </div>
+
+          {listStudents.length > 0 && (
+            <>
+              {/* Desktop Data Table with Clickable Sort Arrows on حضور، غياب، نقاط */}
+              <div className="hidden md:block bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
+                <table className="w-full text-right border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-black text-slate-600">
+                      <th className="py-2.5 px-3 w-16 text-center">الترتيب</th>
+                      <th className="py-2.5 px-3">الطالب</th>
+                      <th className="py-2.5 px-3">الحلقة</th>
+                      <th className="py-2 px-3 w-24 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleSortColumn('attendance')}
+                          className={`inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg transition-colors cursor-pointer ${
+                            sortBy === 'attendance'
+                              ? 'text-teal-800 bg-teal-50/90'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                          title="ترتيب حسب الحضور"
+                        >
+                          <span>حضور</span>
+                          {renderSortIcon('attendance')}
+                        </button>
+                      </th>
+                      <th className="py-2 px-3 w-24 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleSortColumn('absences')}
+                          className={`inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg transition-colors cursor-pointer ${
+                            sortBy === 'absences'
+                              ? 'text-teal-800 bg-teal-50/90'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                          title="ترتيب حسب الغياب"
+                        >
+                          <span>غياب</span>
+                          {renderSortIcon('absences')}
+                        </button>
+                      </th>
+                      <th className="py-2 px-3 w-24 text-left">
+                        <button
+                          type="button"
+                          onClick={() => handleSortColumn('points')}
+                          className={`inline-flex items-center justify-end gap-1 px-2 py-1 rounded-lg transition-colors cursor-pointer ${
+                            sortBy === 'points'
+                              ? 'text-teal-800 bg-teal-50/90'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                          title="ترتيب حسب النقاط"
+                        >
+                          <span>نقاط</span>
+                          {renderSortIcon('points')}
+                        </button>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {paginatedStudents.map((student, index) => {
+                      const currentRank = rankOffset + index;
+                      const circle = circles.find((c) => c.id === student.circleId);
+                      const flag = getStudentFlag(student);
+                      const stats =
+                        studentStatsMap.get(student.id) ||
+                        repository.getStudentAttendanceStats(student.id);
+
+                      return (
+                        <tr
+                          key={student.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => handleOpenStudentModal(student)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleOpenStudentModal(student);
+                            }
+                          }}
+                          className={`cursor-pointer transition-colors hover:bg-teal-50/50 ${
+                            stats.absentDays >= 3
+                              ? 'bg-rose-50/25'
+                              : flag.isFlagged
+                              ? 'bg-amber-50/20'
+                              : ''
+                          }`}
+                        >
+                          <td className="py-2.5 px-3 text-center font-black text-slate-600 tabular-nums">
+                            #{currentRank}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-slate-900">{student.name}</span>
+                              {flag.isFlagged && (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold"
+                                  title={flag.label}
+                                >
+                                  <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                  <span>{flag.badge}</span>
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-600 font-medium">
+                            {circle?.name || 'عامة'}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-bold tabular-nums">
+                            {stats.hasRecords ? (
+                              <span className="text-emerald-700">{stats.presentDays}</span>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-bold tabular-nums">
+                            {stats.hasRecords ? (
+                              <span className={stats.absentDays > 0 ? 'text-rose-600' : 'text-slate-500'}>
+                                {stats.absentDays}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-left font-black text-teal-800 tabular-nums">
+                            {student.currentPoints}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile 2-Line Cards (shown below md) */}
+              <div className="md:hidden space-y-2">
+                {paginatedStudents.map((student, index) => {
+                  const currentRank = rankOffset + index;
+                  const circle = circles.find((c) => c.id === student.circleId);
+                  const flag = getStudentFlag(student);
+                  const stats =
+                    studentStatsMap.get(student.id) ||
+                    repository.getStudentAttendanceStats(student.id);
+
+                  return (
+                    <div
+                      key={student.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleOpenStudentModal(student)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleOpenStudentModal(student);
+                        }
+                      }}
+                      className={`bg-white rounded-xl px-3 py-2.5 border shadow-2xs transition-colors cursor-pointer space-y-1 select-text ${
+                        stats.absentDays >= 3
+                          ? 'border-rose-200/80 bg-rose-50/15'
+                          : flag.isFlagged
+                          ? 'border-amber-200/80 bg-amber-50/15'
+                          : 'border-slate-200/90 hover:border-teal-300'
+                      }`}
+                    >
+                      {/* Line 1: Rank + Student Name + Optional Alert Pill */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-[11px] font-black text-slate-500 tabular-nums shrink-0">
+                            #{currentRank}
+                          </span>
+                          <h4 className="text-xs sm:text-[13px] font-bold text-slate-900 truncate">
+                            {student.name}
+                          </h4>
+                        </div>
+                        {flag.isFlagged && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200/80 px-1.5 py-0.5 rounded-md shrink-0">
+                            <AlertTriangle className="w-3 h-3 text-amber-600" />
+                            <span>{flag.badge}</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Line 2: Circle + Attendance/Absence + Points */}
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="text-slate-500 font-medium truncate">
+                          {circle?.name || 'عامة'}
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0 font-bold tabular-nums">
+                          {stats.hasRecords ? (
+                            <>
+                              <span className="text-emerald-700">حضور {stats.presentDays}</span>
+                              <span className="text-slate-300">·</span>
+                              <span className={stats.absentDays > 0 ? 'text-rose-600' : 'text-slate-500'}>
+                                غياب {stats.absentDays}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-slate-400 font-medium">بلا رصد</span>
+                          )}
+                          <span className="text-slate-300">·</span>
+                          <span className="text-teal-800 font-black">{student.currentPoints} ن</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Pagination: 25 rows initially with «عرض المزيد» */}
+              {listStudents.length > visibleCount && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleCount((prev) => prev + PAGE_SIZE)}
+                  className="w-full py-2.5 rounded-xl bg-white border border-slate-200 text-teal-800 text-xs font-bold hover:bg-slate-50 shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors tabular-nums"
+                >
+                  <span>عرض المزيد ({listStudents.length - visibleCount} طالب متبقٍ)</span>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -771,13 +861,13 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
               </button>
             </div>
 
-            {/* Attendance Summary Card (3 columns) */}
+            {/* Attendance & Points Summary Card (4 columns) */}
             {(() => {
               const mStats = repository.getStudentAttendanceStats(selectedStudent.id);
               const circle = circles.find((c) => c.id === selectedStudent.circleId);
 
               return (
-                <div className="grid grid-cols-3 gap-2 text-center text-xs font-bold">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs font-bold">
                   {/* عدد أيام الحضور */}
                   <div className="bg-emerald-50/80 p-2.5 rounded-2xl border border-emerald-200/90">
                     <span className="text-[10px] text-emerald-800 block font-bold">أيام الحضور</span>
@@ -786,6 +876,17 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                     </span>
                     <span className="text-[9px] text-emerald-700 font-medium block">
                       رصد (2 أو 1)
+                    </span>
+                  </div>
+
+                  {/* النقاط الحالية */}
+                  <div className="bg-amber-50/80 p-2.5 rounded-2xl border border-amber-200/90">
+                    <span className="text-[10px] text-amber-800 block font-bold">رصيد النقاط</span>
+                    <span className="text-sm font-black text-amber-950 block mt-0.5 tabular-nums">
+                      {selectedStudent.currentPoints} نقطة
+                    </span>
+                    <span className="text-[9px] text-amber-700 font-medium block">
+                      إجمالي الرصيد
                     </span>
                   </div>
 
@@ -813,6 +914,16 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                 </div>
               );
             })()}
+
+            {/* Student Daily Points Log Trigger */}
+            <button
+              type="button"
+              onClick={() => setPointsLogStudent(selectedStudent)}
+              className="w-full py-2.5 px-3.5 rounded-2xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-2xs cursor-pointer"
+            >
+              <CalendarDays className="w-4 h-4 text-teal-100 shrink-0" />
+              <span>سجل النقاط</span>
+            </button>
 
             {/* Official Demographic Information List */}
             <div className="bg-slate-50/80 rounded-2xl p-3.5 border border-slate-200/90 space-y-3">
@@ -1078,6 +1189,11 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
           </div>
         </div>
       )}
+      {/* Daily Student Points Log Modal (Day Cards) */}
+      <StudentPointsLogModal
+        student={pointsLogStudent}
+        onClose={() => setPointsLogStudent(null)}
+      />
     </div>
   );
 };

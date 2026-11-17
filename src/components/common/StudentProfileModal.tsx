@@ -11,7 +11,10 @@ import {
   Eye,
   GraduationCap,
   Users as UsersIcon,
+  CalendarDays,
+  ChevronLeft,
 } from 'lucide-react';
+import { StudentPointsLogModal } from './StudentPointsLogModal';
 import { calculateAge } from '../../utils/dateUtils';
 
 interface StudentProfileModalProps {
@@ -21,6 +24,7 @@ interface StudentProfileModalProps {
 
 export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ student, onClose }) => {
   const [showNationalId, setShowNationalId] = useState(false);
+  const [showPointsLog, setShowPointsLog] = useState(false);
   const { showToast } = useToast();
 
   if (!student) return null;
@@ -108,6 +112,22 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
             </span>
           </div>
         </div>
+
+        {/* Student Daily Points Log Trigger */}
+        <button
+          type="button"
+          onClick={() => setShowPointsLog(true)}
+          className="w-full py-2.5 px-3.5 rounded-2xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold flex items-center justify-between gap-2 transition-colors shadow-2xs cursor-pointer"
+        >
+          <span className="inline-flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-teal-100 shrink-0" />
+            <span>سجل النقاط</span>
+          </span>
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-100">
+            <span>الأيام والتواريخ والبنود المرصودة</span>
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </span>
+        </button>
 
         {/* Demographic Information Sections */}
         <div className="bg-slate-50/80 rounded-2xl p-3.5 border border-slate-200/90 space-y-3">
@@ -310,6 +330,12 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
           </button>
         </div>
       </div>
+
+      {/* Daily Student Points Log Modal (Day Cards) */}
+      <StudentPointsLogModal
+        student={showPointsLog ? student : null}
+        onClose={() => setShowPointsLog(false)}
+      />
     </div>
   );
 };

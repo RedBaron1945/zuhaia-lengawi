@@ -14,6 +14,8 @@ import {
 
 export const SUPERVISOR_UID = 'Z3GsAoWaFqYu6uLl1bVRNoCD5mE2';
 export const TECH_SUPPORT_UID = 'rT1eeIfKODWHcFjgIPokVbCEPbB2';
+export const UNASSIGNED_CIRCLE_ID = 'unassigned';
+export const TEST_STUDENT_ID = 'rJeGonuG4IW2tPIOREi8E6dR6mq1';
 
 // 9 Official Quran Circles with their permanent IDs
 export const INITIAL_CIRCLES: Circle[] = [
@@ -23,7 +25,7 @@ export const INITIAL_CIRCLES: Circle[] = [
     teacherId: 'a1Mc0gxwTJeBTs0znMfT717Mzvv1',
     teacherName: 'سيد نقيب الله',
     schedule: 'الأحد إلى الأربعاء (بعد العصر)',
-    studentCount: 24,
+    studentCount: 23,
     room: 'جامع زهية لنجاوي - ركن عثمان بن عفان',
   },
   {
@@ -41,7 +43,7 @@ export const INITIAL_CIRCLES: Circle[] = [
     teacherId: 'WWVi2QabthStDpdm98uRSxw45nT2',
     teacherName: 'علي محمد',
     schedule: 'الأحد إلى الأربعاء (بعد العصر)',
-    studentCount: 19,
+    studentCount: 20,
     room: 'جامع زهية لنجاوي - ركن عمر بن الخطاب',
   },
   {
@@ -50,7 +52,7 @@ export const INITIAL_CIRCLES: Circle[] = [
     teacherId: 'fDKk692XXCaLq03UYWIXylIl9nF2',
     teacherName: 'وليد الأهدل',
     schedule: 'الأحد إلى الأربعاء (بعد العصر)',
-    studentCount: 15,
+    studentCount: 17,
     room: 'جامع زهية لنجاوي - ركن ابن عباس',
   },
   {
@@ -59,7 +61,7 @@ export const INITIAL_CIRCLES: Circle[] = [
     teacherId: '6WsRaB2l2EY0qxNIZnsSjXjJ1B52',
     teacherName: 'علاء علي',
     schedule: 'الأحد إلى الأربعاء (بعد العصر)',
-    studentCount: 27,
+    studentCount: 29,
     room: 'جامع زهية لنجاوي - ركن علي بن أبي طالب',
   },
   {
@@ -287,6 +289,11 @@ export const CIRCLE_NAME_TO_ID_MAP: Record<string, string> = {
   'حلقة عبدالله بن مسعود': 'circle_masood',
   'حلقة عبد الله بن مسعود': 'circle_masood',
   'ابن مسعود': 'circle_masood',
+
+  // بدون حلقة (حساب تجريبي)
+  [UNASSIGNED_CIRCLE_ID]: UNASSIGNED_CIRCLE_ID,
+  'بدون حلقة': UNASSIGNED_CIRCLE_ID,
+  'غير مرتبط': UNASSIGNED_CIRCLE_ID,
 };
 
 /**
@@ -295,6 +302,7 @@ export const CIRCLE_NAME_TO_ID_MAP: Record<string, string> = {
 export function normalizeCircleId(raw?: string): string {
   if (!raw) return 'circle_othman';
   const clean = raw.trim();
+  if (clean === UNASSIGNED_CIRCLE_ID) return UNASSIGNED_CIRCLE_ID;
   if (CIRCLE_NAME_TO_ID_MAP[clean]) {
     return CIRCLE_NAME_TO_ID_MAP[clean];
   }
@@ -305,13 +313,13 @@ export function normalizeCircleId(raw?: string): string {
   return clean;
 }
 
-// Official students of Othman bin Affan circle
 export const INITIAL_STUDENTS: Student[] = [
+  // حساب تجريبي غير مرتبط بأي حلقة أو معلم
   {
-    id: 'rJeGonuG4IW2tPIOREi8E6dR6mq1',
+    id: TEST_STUDENT_ID,
     name: 'طالب تجربة',
     email: '',
-    circleId: 'circle_othman',
+    circleId: UNASSIGNED_CIRCLE_ID,
     currentPoints: 0,
     streakDays: 0,
     attendanceRate: 100,
@@ -321,6 +329,7 @@ export const INITIAL_STUDENTS: Student[] = [
     consecutiveAbsences: 0,
     daysWithoutLog: 0,
   },
+  // حلقة عثمان بن عفان (23 طالباً) - المعلم: سيد نقيب الله (a1Mc0gxwTJeBTs0znMfT717Mzvv1)
   {
     id: 'EPQ5iFhyusNgvkDeGGr5xtLUJtt1',
     name: 'احمد بشير احمد حسن',
@@ -952,7 +961,7 @@ export const INITIAL_STUDENTS: Student[] = [
     consecutiveAbsences: 0,
     daysWithoutLog: 0,
   },
-  // حلقة عمر بن الخطاب (19 طالباً) - المعلم: علي محمد (WWVi2QabthStDpdm98uRSxw45nT2)
+  // حلقة عمر بن الخطاب (20 طالباً) - المعلم: علي محمد (WWVi2QabthStDpdm98uRSxw45nT2)
   {
     id: '6QKUJQQ900Us9syQLk2MaRCj6d12',
     name: 'ابراهيم عبدالرحمن السناني',
@@ -1136,6 +1145,20 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
+    id: 'jIGLQ97INSNolwCkfDtSYFaGeyf2',
+    name: 'عبدالعزيز فلاته',
+    email: '',
+    circleId: 'circle_omar',
+    currentPoints: 0,
+    streakDays: 0,
+    attendanceRate: 100,
+    memorizationRating: 'ممتاز',
+    active: true,
+    lastActivityDate: new Date().toISOString().split('T')[0],
+    consecutiveAbsences: 0,
+    daysWithoutLog: 0,
+  },
+  {
     id: 'YNDym03MOzWOIodIUoHdNvATWDd2',
     name: 'فارس سعيد الجعيدي',
     email: '',
@@ -1219,7 +1242,21 @@ export const INITIAL_STUDENTS: Student[] = [
     consecutiveAbsences: 0,
     daysWithoutLog: 0,
   },
-  // حلقة عبدالله بن عباس (15 طالباً) - المعلم: وليد الاهدل (fDKk692XXCaLq03UYWIXylIl9nF2)
+  // حلقة عبدالله بن عباس (17 طالباً) - المعلم: وليد الاهدل (fDKk692XXCaLq03UYWIXylIl9nF2)
+  {
+    id: 'uROWzrTH6fTSaA8M5VmMOUAhEFE3',
+    name: 'أحمد سعد السيد',
+    email: '',
+    circleId: 'circle_abbas',
+    currentPoints: 0,
+    streakDays: 0,
+    attendanceRate: 100,
+    memorizationRating: 'ممتاز',
+    active: true,
+    lastActivityDate: new Date().toISOString().split('T')[0],
+    consecutiveAbsences: 0,
+    daysWithoutLog: 0,
+  },
   {
     id: 'AabjKlpEbzOvfrAXdBdAWj9IFPF3',
     name: 'إياد الاهدل',
@@ -1430,7 +1467,21 @@ export const INITIAL_STUDENTS: Student[] = [
     consecutiveAbsences: 0,
     daysWithoutLog: 0,
   },
-  // حلقة علي بن ابي طالب (27 طالباً) - المعلم: علاء علي (6WsRaB2l2EY0qxNIZnsSjXjJ1B52)
+  {
+    id: 'AeighjzxKfO0Xmikbyx1ldn12rF2',
+    name: 'يوسف سعد السيد',
+    email: '',
+    circleId: 'circle_abbas',
+    currentPoints: 0,
+    streakDays: 0,
+    attendanceRate: 100,
+    memorizationRating: 'ممتاز',
+    active: true,
+    lastActivityDate: new Date().toISOString().split('T')[0],
+    consecutiveAbsences: 0,
+    daysWithoutLog: 0,
+  },
+  // حلقة علي بن ابي طالب (29 طالباً) - المعلم: علاء علي (6WsRaB2l2EY0qxNIZnsSjXjJ1B52)
   {
     id: 'HH6C99MNpjOx2pwB0MrdFhert0g2',
     name: 'احمد عبده قاسم هبه',
@@ -1602,6 +1653,34 @@ export const INITIAL_STUDENTS: Student[] = [
   {
     id: 'UuJ3O7RZc6dA7DglOuwvZW5zAPH3',
     name: 'عبدالحميد أمادو هوسي',
+    email: '',
+    circleId: 'circle_ali',
+    currentPoints: 0,
+    streakDays: 0,
+    attendanceRate: 100,
+    memorizationRating: 'ممتاز',
+    active: true,
+    lastActivityDate: new Date().toISOString().split('T')[0],
+    consecutiveAbsences: 0,
+    daysWithoutLog: 0,
+  },
+  {
+    id: 'kf8UnfcctYdRXZoLw4I4HvrRob62',
+    name: 'عبدالرحمن عبدالله فارس دغار',
+    email: '',
+    circleId: 'circle_ali',
+    currentPoints: 0,
+    streakDays: 0,
+    attendanceRate: 100,
+    memorizationRating: 'ممتاز',
+    active: true,
+    lastActivityDate: new Date().toISOString().split('T')[0],
+    consecutiveAbsences: 0,
+    daysWithoutLog: 0,
+  },
+  {
+    id: 'PQhWBDq8QSa8rAl2gf7NORBXBFL2',
+    name: 'عبدالرحمن عمر هلال',
     email: '',
     circleId: 'circle_ali',
     currentPoints: 0,
@@ -2205,7 +2284,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'P2HiDOdD6qVQl8j7owLyZ7b0VRA2',
+    id: 'xU3gSqrjwSVxTdYag9KUHOPVmIg2',
     name: 'شهاب سعد السيد',
     email: '',
     circleId: 'circle_saeed',
@@ -2303,7 +2382,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: '4ipFtSNlHdhOieigmbpJodTn2Gx2',
+    id: 'WE8LIn7oK1VtUVeoUyiWMegiDXw2',
     name: 'مشاري عبدالعزيز الحارثي',
     email: '',
     circleId: 'circle_saeed',
@@ -2655,7 +2734,7 @@ export const INITIAL_STUDENTS: Student[] = [
   },
   // حلقة عمر بن عبد العزيز (23 طالباً) - المعلم: علي باعباد (NSmjSrHJZ6Ozr23TgdRms2qvPI32)
   {
-    id: 'NJ41NTvoclPTPTnK0kPoDXyKQAP2',
+    id: 'mazEYvcDjWQFJGJ2gJE3VqD92yb2',
     name: 'احمد محسن احمد عثمان',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2669,7 +2748,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'qgsb2sYahucl4SmMS52uz487Wb02',
+    id: 'hpcxec6jyaW9JsqmXgQzUxJjHmg1',
     name: 'البراء جبرير احمد حدادي',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2683,7 +2762,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'orS9AoCDxBN6grKkW0lvRz9C1fy1',
+    id: 'WIqMH3z2V1VHUs63cC9BfTpKMKC2',
     name: 'إبراهيم صالح باوزير',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2697,7 +2776,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'Bh2QqE4z27OffMlP7QHEnH0sKm43',
+    id: 'dmG8X1rNHhc6PgSTGHQSpMRAe9i1',
     name: 'إسماعيل علي محمد عبده',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2711,7 +2790,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: '2D6GLrJPPCQXxAw5Ao4R2ZiBpUt2',
+    id: 'YsW0SiKnsOfR5tQLbgvpg1qED7F2',
     name: 'إياد نصيب عبدالله حسين المشرفي',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2725,7 +2804,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'eqqlscRwHAbrK95fDrMeBB97yfo2',
+    id: 'bAyIbEbRr7gEYDGGaKesi62Tkc53',
     name: 'أحمد صالح عبدالله باسويد',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2739,7 +2818,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'wfn1G1thBGSBTwJoHnmr9RmnV822',
+    id: 'tL4d74QQ9oegfKFvcu1vxiVt4DF3',
     name: 'أيمن أيسم شلدان',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2753,7 +2832,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'ZRSlMQDEnJfFRDB98zXQfyDfEEo1',
+    id: 'ncDK5Jkw6TWyFa87y0J17LB5Q1h1',
     name: 'حسن علي محمد بري',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2767,7 +2846,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: '13BCdtkYC6cbH7j4aTpM8K2y76p1',
+    id: 'zgE2FLDwvbhnQ1daBiBB2HXVpek2',
     name: 'سعيد مساعد الجدعاني',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2781,7 +2860,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'C2EWxvorywhXTJEpLle1HDp2i2J3',
+    id: 'vLRwwNsFQEhjVVC7CxYd3CtaK2K2',
     name: 'سلمان عبدالكريم سياد',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2795,7 +2874,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'r5cBXITYHWTCOLOOI3ZkVeLiLLh1',
+    id: 'VrKUJxm0zuaht1ZzLc3j1JIqyQ92',
     name: 'عبدالرحمن عمر الغامدي',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2809,7 +2888,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: '7tYRaNNqOOelC1mYdvp1OU3sgnC3',
+    id: 'znMVDJQsIKUspEgalmK5nxbVBD13',
     name: 'عبدالعزيز أبوبكر عبدالله',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2823,7 +2902,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: '8g9oEJRdqsaNGJfoClzQ5ofYM8o2',
+    id: '99nKyWXb5PYL8s4SziKCKmiCSWt2',
     name: 'عبدالعزيز حسان نزار عزالدين',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2837,7 +2916,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'UIBS5OqSnpfhspNksObBkG39RaI3',
+    id: 'PhVeXhJU34SiJUUR0NhW69VnoeB3',
     name: 'عبدالله عاصم بن عفيف',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2851,7 +2930,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'XIZl3ZMAEMZh0ytrzzE6YcpAN7Y2',
+    id: '7HEQVOCi0bYp0pYSXP6afiqV1mf2',
     name: 'عبدالله هاني قحطان منصور',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2865,7 +2944,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'aD5vkvAyqMb3ExSiA5rJRR0rRUr1',
+    id: 'PjlFnI49MTR7oV95AiaARNJqKCo1',
     name: 'عمار سعيد محمد العمري',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2879,7 +2958,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'R2xPHml7WBOePdEVHW4DhZShFMh2',
+    id: 'P0KbvgjbGjPALndxrq8SFLUFpcD3',
     name: 'فراس عمر مسفر الغامدي',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2893,7 +2972,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: '0fLTSHjk5LWU3QN9Q4LGbFhUvII3',
+    id: 'hMBWFivHBwfwzpyCnjqLtiT3wug2',
     name: 'فيصل محمد باعشن',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2907,7 +2986,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'Wit3I25DpGS46JmAf8LlexHPW0I2',
+    id: 'DQBJXCADjUNvVN0KpIf22p6cYx23',
     name: 'ماجد عبدالله لويفي الجهني',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2921,7 +3000,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'MH5ytx1Do0YrouH3RruZCJ1w1qm1',
+    id: 'TpiGsSQhY9fL7FSrqaNniuUc3Ez2',
     name: 'محمود محمد عبد المالك أبو قبلان',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2935,7 +3014,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'f3VdNZuRLjgtJ6OXtskUvAtiHuy2',
+    id: 'Pu4N4qOVDPflyffywISIP1dClC43',
     name: 'مصطفى عبد الناصر محمود أحمد',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2949,7 +3028,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'acsSfLFIU6bK2gwALaan91P0Ks12',
+    id: '9GeVLJRWNPULtuhHGm0GwHh92ai1',
     name: 'معاذ اسماعيل محمد الاهدل',
     email: '',
     circleId: 'circle_omar_abdulaziz',
@@ -2963,7 +3042,7 @@ export const INITIAL_STUDENTS: Student[] = [
     daysWithoutLog: 0,
   },
   {
-    id: 'gSEAzNpm5FNjwNDGGANZbSqaGV22',
+    id: 'f6WUBDPkOPR8CT1D8elwmJLCJJm1',
     name: 'يوسف ايمن سليمان شلدان',
     email: '',
     circleId: 'circle_omar_abdulaziz',

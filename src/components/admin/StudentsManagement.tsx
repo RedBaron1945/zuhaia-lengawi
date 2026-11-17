@@ -3,6 +3,7 @@ import { Student, Circle, User } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import { PointsAdjustmentModal } from './PointsAdjustmentModal';
+import { StudentPointsLogModal } from '../common/StudentPointsLogModal';
 import { calculateAge } from '../../utils/dateUtils';
 import {
   Users,
@@ -25,6 +26,7 @@ import {
   ChevronRight,
   ChevronLeft,
   LifeBuoy,
+  CalendarDays,
 } from 'lucide-react';
 
 export interface PendingTicketStudentAction {
@@ -36,6 +38,7 @@ export interface PendingTicketStudentAction {
 interface StudentsManagementProps {
   adminUser: User;
   onUpdate: () => void;
+  onNavigateToAuditLog?: () => void;
   pendingTicketAction?: PendingTicketStudentAction | null;
   onTicketActionComplete?: (ticketId: string) => void;
   onCancelTicketAction?: () => void;
@@ -64,6 +67,7 @@ const normalizeArabicText = (text: string): string =>
 export const StudentsManagement: React.FC<StudentsManagementProps> = ({
   adminUser,
   onUpdate,
+  onNavigateToAuditLog,
   pendingTicketAction,
   onTicketActionComplete,
   onCancelTicketAction,
@@ -102,6 +106,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({
   const [inspectingStudent, setInspectingStudent] = useState<Student | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [pointsAdjustStudent, setPointsAdjustStudent] = useState<Student | null>(null);
+  const [pointsLogStudent, setPointsLogStudent] = useState<Student | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<Student | null>(null);
   const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
 
@@ -887,11 +892,25 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({
             onClick={() => {
               const s = menuAnchor.student;
               setMenuAnchor(null);
+              setPointsLogStudent(s);
+            }}
+            className="w-full px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+          >
+            <CalendarDays className="w-3.5 h-3.5 text-teal-700" />
+            <span>سجل النقاط</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const s = menuAnchor.student;
+              setMenuAnchor(null);
               setPointsAdjustStudent(s);
             }}
             className="w-full px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
           >
-            <Award className="w-3.5 h-3.5 text-teal-700" />
+            <Award className="w-3.5 h-3.5 text-indigo-700" />
             <span>تعديل النقاط (IT)</span>
           </button>
 
@@ -1112,11 +1131,19 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({
               <button
                 type="button"
                 onClick={() => setInspectingStudent(null)}
-                className="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold cursor-pointer"
+                className="px-3.5 py-2 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
               >
                 إغلاق
               </button>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setPointsLogStudent(inspectingStudent)}
+                  className="px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer shadow-2xs transition-colors"
+                >
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  <span>سجل النقاط</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1124,7 +1151,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({
                     setInspectingStudent(null);
                     setPointsAdjustStudent(s);
                   }}
-                  className="px-3.5 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 border border-teal-200 text-teal-800 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="px-3.5 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 border border-teal-200 text-teal-800 text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <Award className="w-3.5 h-3.5" />
                   <span>تعديل النقاط (IT)</span>
@@ -1136,7 +1163,7 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({
                     setInspectingStudent(null);
                     handleOpenEdit(s);
                   }}
-                  className="px-4 py-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <Edit2 className="w-3.5 h-3.5" />
                   <span>تعديل البيانات</span>
@@ -1455,8 +1482,15 @@ export const StudentsManagement: React.FC<StudentsManagementProps> = ({
             setStudents(repository.getStudents());
             onUpdate();
           }}
+          onNavigateToAuditLog={onNavigateToAuditLog}
         />
       )}
+
+      {/* Daily Student Points Log Modal (Day Cards) */}
+      <StudentPointsLogModal
+        student={pointsLogStudent}
+        onClose={() => setPointsLogStudent(null)}
+      />
 
       {/* Typed-Name Delete Confirmation Modal */}
       {deleteCandidate && (

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../../types';
+import { UNASSIGNED_CIRCLE_ID } from '../../data/mockData';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { RewardsCatalog } from './RewardsCatalog';
 import { StudentHistory } from './StudentHistory';
@@ -111,7 +112,11 @@ export const StudentView: React.FC<StudentViewProps> = ({ currentUser }) => {
                   <div>
                     <h2 className="text-sm font-bold leading-none">{student.name}</h2>
                     <span className="text-[11px] text-teal-200 mt-0.5 inline-block">
-                      {circle ? `${circle.name} - المعلم ${circle.teacherName}` : 'حلقة سعيد بن زيد - المعلم علي باعباد'}
+                      {circle
+                        ? `${circle.name} - المعلم ${circle.teacherName}`
+                        : student.circleId === UNASSIGNED_CIRCLE_ID
+                        ? 'حساب تجريبي · غير مرتبط بحلقة أو معلم'
+                        : 'حلقة قرآنية'}
                     </span>
                   </div>
                 </div>

@@ -1,16 +1,40 @@
 import React, { useState, useEffect } from 'react';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
-import { AuditLog } from '../../types';
-import { Search, Trash2, X, RefreshCw } from 'lucide-react';
+import { AuditLog, User } from '../../types';
+import { Search, Trash2, X, RefreshCw, RotateCcw, Lock } from 'lucide-react';
 import { formatHijriDateTime } from '../../utils/dateUtils';
 import { ConfirmationModal } from '../common/ConfirmationModal';
 import { useToast } from '../../context/ToastContext';
 
-export const AuditLogView: React.FC = () => {
+interface AuditLogViewProps {
+  currentUser?: User;
+}
+
+const parseSignedPointsFromAuditDetails = (details: string): number | null => {
+  const structuredMatch = details.match(/التعديل:\s*([+-]?\d+)/);
+  if (structuredMatch?.[1]) {
+    const num = parseInt(structuredMatch[1], 10);
+    return Number.isFinite(num) && num !== 0 ? num : null;
+  }
+  const legacyMatch = details.match(/([+-]\d+)\s*نقطة/);
+  if (legacyMatch?.[1]) {
+    const num = parseInt(legacyMatch[1], 10);
+    return Number.isFinite(num) && num !== 0 ? num : null;
+  }
+  return null;
+};
+
+export const AuditLogView: React.FC<AuditLogViewProps> = ({ currentUser }) => {
   const [filterType, setFilterType] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [deleteTargetLog, setDeleteTargetLog] = useState<AuditLog | null>(null);
+  const [reverseTarget, setReverseTarget] = useState<{
+    log: AuditLog;
+    studentId: string;
+    studentName: string;
+    reverseAmount: number;
+  } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [, setTick] = useState(0);
   const { showToast } = useToast();
@@ -43,7 +67,7 @@ export const AuditLogView: React.FC = () => {
   const handleConfirmDeleteSingle = () => {
     if (!deleteTargetLog) return;
     const res = repository.deleteAuditLog(deleteTargetLog.id);
-    showToast(res.message, 'info');
+    showToast(res.message, res.success ? 'info' : 'error');
     setDeleteTargetLog(null);
   };
 
@@ -52,6 +76,38 @@ export const AuditLogView: React.FC = () => {
     showToast(res.message, 'info');
     setConfirmClearAll(false);
   };
+
+  const handleConfirmReverse = () => {
+    if (!reverseTarget) return;
+    const { log, studentId, studentName, reverseAmount } = reverseTarget;
+    const actorName = currentUser?.name || 'الدعم الفني';
+    const actorRole = currentUser?.role || 'admin';
+    const actorId = currentUser?.id || actorName;
+
+    const res = repository.addPointTransaction({
+      studentId,
+      amount: reverseAmount,
+      type: 'admin_correction',
+      reason: `تصحيح عكسي لعملية سابقة (${reverseAmount >= 0 ? `+${reverseAmount}` : reverseAmount})`,
+      note: `عكس سجل: ${log.action} (${log.actorName})`,
+      actorId,
+      createdBy: actorName,
+      createdByRole: actorRole,
+    });
+
+    if (res.success) {
+      const updated = repository.getStudentById(studentId);
+      showToast(
+        `تم تنفيذ عملية عكسية للطالب ${studentName}. الرصيد الآن ${updated?.currentPoints ?? 0} ✓`,
+        'success'
+      );
+      setReverseTarget(null);
+    } else {
+      showToast(res.message, 'error');
+    }
+  };
+
+  const deletableLogsCount = logs.filter((l) => l.targetType !== 'point').length;
 
   return (
     <div className="space-y-3">
@@ -92,16 +148,16 @@ export const AuditLogView: React.FC = () => {
           <span>تحديث</span>
         </button>
 
-        {/* Clear All Logs Button */}
-        {logs.length > 0 && (
+        {/* Clear Non-Point Logs Button */}
+        {deletableLogsCount > 0 && (
           <button
             type="button"
             onClick={() => setConfirmClearAll(true)}
             className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[40px] shrink-0"
-            title="مسح كامل سجل العمليات"
+            title="مسح السجلات الإدارية (تبقى سجلات النقاط محمية)"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>مسح السجل كاملاً</span>
+            <span>مسح السجلات الأخرى</span>
           </button>
         )}
       </div>
@@ -113,45 +169,101 @@ export const AuditLogView: React.FC = () => {
             لا توجد سجلات تطابق البحث.
           </div>
         ) : (
-          filteredLogs.map((log) => (
-            <div
-              key={log.id}
-              className="p-3.5 hover:bg-slate-50/70 transition-colors flex items-start justify-between gap-3 group"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="w-2 h-2 rounded-full bg-indigo-600 shrink-0" />
-                    <span className="text-xs font-black text-slate-900">{log.action}</span>
-                    <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-bold">
-                      {log.actorName}
+          filteredLogs.map((log) => {
+            const isPointLog = log.targetType === 'point';
+            const parsedDelta = isPointLog ? parseSignedPointsFromAuditDetails(log.details) : null;
+            const targetStudent =
+              isPointLog && log.targetId ? repository.getStudentById(log.targetId) : undefined;
+            const canReverse = Boolean(
+              isPointLog &&
+                targetStudent &&
+                parsedDelta !== null &&
+                !log.action.includes('عكسي')
+            );
+
+            return (
+              <div
+                key={log.id}
+                className="p-3.5 hover:bg-slate-50/70 transition-colors flex items-start justify-between gap-3 group"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-black text-slate-900">{log.action}</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-bold">
+                        {log.actorName}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 tabular-nums shrink-0">
+                      {formatHijriDateTime(log.timestamp)}
                     </span>
                   </div>
-                  <span className="text-[10px] text-slate-400 tabular-nums shrink-0">
-                    {formatHijriDateTime(log.timestamp)}
-                  </span>
+                  <p className="text-xs text-slate-600 leading-relaxed font-medium break-words">
+                    {log.details}
+                  </p>
                 </div>
-                <p className="text-xs text-slate-600 pr-4 leading-relaxed font-medium">
-                  {log.details}
-                </p>
-              </div>
 
-              {/* Action: Delete this specific log record */}
-              <button
-                type="button"
-                onClick={() => setDeleteTargetLog(log)}
-                title="حذف هذا السجل"
-                aria-label="حذف هذا السجل"
-                className="w-7 h-7 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition-all cursor-pointer shrink-0 border border-transparent hover:border-rose-100"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          ))
+                {/* Action: Point logs use reverse operation (never deleted); non-point logs allow delete */}
+                {isPointLog ? (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {canReverse && targetStudent && parsedDelta !== null ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReverseTarget({
+                            log,
+                            studentId: targetStudent.id,
+                            studentName: targetStudent.name,
+                            reverseAmount: -parsedDelta,
+                          })
+                        }
+                        title="تصحيح بعملية عكسية جديدة دون حذف السجل"
+                        className="min-h-[32px] px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-amber-50 hover:border-amber-300 text-slate-700 hover:text-amber-900 text-[11px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>عملية عكسية</span>
+                      </button>
+                    ) : (
+                      <span
+                        title="سجل نقاط موثق غير قابل للحذف"
+                        className="w-7 h-7 rounded-lg text-slate-400 bg-slate-50 border border-slate-200 flex items-center justify-center"
+                      >
+                        <Lock className="w-3.5 h-3.5" />
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTargetLog(log)}
+                    title="حذف هذا السجل"
+                    aria-label="حذف هذا السجل"
+                    className="w-7 h-7 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition-all cursor-pointer shrink-0 border border-transparent hover:border-rose-100"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
 
-      {/* Confirmation Modal: Delete Specific Log Entry */}
+      {/* Confirmation Modal: Reverse Point Operation */}
+      {reverseTarget && (
+        <ConfirmationModal
+          isOpen={!!reverseTarget}
+          onClose={() => setReverseTarget(null)}
+          onConfirm={handleConfirmReverse}
+          title="تأكيد التصحيح بعملية عكسية"
+          message={`سيتم تسجيل عملية عكسية جديدة للطالب ${reverseTarget.studentName} بمقدار (${reverseTarget.reverseAmount >= 0 ? `+${reverseTarget.reverseAmount}` : reverseTarget.reverseAmount}) نقطة دون حذف السجل الأصلي.\n\nهل أنت متأكد من المتابعة؟`}
+          confirmText="تنفيذ العملية العكسية"
+          cancelText="إلغاء"
+          type={reverseTarget.reverseAmount < 0 ? 'danger' : 'primary'}
+        />
+      )}
+
+      {/* Confirmation Modal: Delete Specific Non-Point Log Entry */}
       {deleteTargetLog && (
         <ConfirmationModal
           isOpen={!!deleteTargetLog}
@@ -165,15 +277,15 @@ export const AuditLogView: React.FC = () => {
         />
       )}
 
-      {/* Confirmation Modal: Clear Entire Log */}
+      {/* Confirmation Modal: Clear Non-Point Logs */}
       {confirmClearAll && (
         <ConfirmationModal
           isOpen={confirmClearAll}
           onClose={() => setConfirmClearAll(false)}
           onConfirm={handleConfirmClearAll}
-          title="مسح كامل سجل العمليات"
-          message={`أنت على وشك مسح جميع سجلات العمليات والأنشطة (${logs.length} سجل) نهائياً من قاعدة البيانات. لن يمكن استرجاع هذه السجلات بعد المسح.`}
-          confirmText="نعم، مسح كل السجل نهائياً"
+          title="مسح السجلات غير المرتبطة بالنقاط"
+          message={`سيتم مسح السجلات الإدارية الأخرى (${deletableLogsCount} سجل)، مع الاحتفاظ بجميع سجلات تعديل النقاط محمية في سجل التدقيق.`}
+          confirmText="نعم، مسح السجلات الأخرى"
           cancelText="إلغاء"
           type="danger"
         />

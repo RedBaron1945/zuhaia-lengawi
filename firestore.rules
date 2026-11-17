@@ -1,142 +1,583 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // الدوال المساعدة للتحقق من الصلاحيات
-    function isAuthenticated() {
-      return request.auth != null;
+    // Default deny catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
     }
 
-    // المشرف العام
+    // -------------------------------------------------------------------------
+    // Global Identity, Non-Anonymous Auth & Validation Primitives
+    // -------------------------------------------------------------------------
+    function isAuthenticated() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function userExists() {
+      return exists(userPath());
+    }
+
+    function userData() {
+      return get(userPath()).data;
+    }
+
+    function teacherPath() {
+      return /databases/$(database)/documents/teachers/$(request.auth.uid);
+    }
+
+    function teacherExists() {
+      return exists(teacherPath());
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.uid == 'rT1eeIfKODWHcFjgIPokVbCEPbB2' ||
+        (request.auth.token.email == 'bbrys005@gmail.com' && request.auth.token.email_verified == true) ||
+        (userExists() && userData().role == 'admin')
+      );
+    }
+
     function isSupervisor() {
       return isAuthenticated() && (
         request.auth.uid == 'Z3GsAoWaFqYu6uLl1bVRNoCD5mE2' ||
-        request.auth.token.role == 'supervisor' ||
-        request.auth.token.role == 'admin'
+        (userExists() && userData().role == 'supervisor')
       );
     }
 
-    // الدعم الفني
-    function isTechSupport() {
-      return isAuthenticated() && (
-        request.auth.uid == 'rT1eeIfKODWHcFjgIPokVbCEPbB2' ||
-        request.auth.token.role == 'tech_support'
-      );
-    }
-
-    // المعلمون الرسميون
     function isTeacher() {
       return isAuthenticated() && (
-        request.auth.uid in [
-          'a1Mc0gxwTJeBTs0znMfT717Mzvv1',
-          'JnW6yM01vfMnh8UjreoTUHLKHnU2',
-          'WWVi2QabthStDpdm98uRSxw45nT2',
-          'fDKk692XXCaLq03UYWIXylIl9nF2',
-          '6WsRaB2l2EY0qxNIZnsSjXjJ1B52',
-          'Ly4inOQiNaNKYdXrrSolOWaXPvj1',
-          'fA0XLmpV0jUEksBx325dq2axUT42',
-          'NSmjSrHJZ6Ozr23TgdRms2qvPI32',
-          '5R1cPXjKJ9XHNBFVmoEJdAh2Wu33'
-        ] ||
-        request.auth.token.role == 'teacher'
+        teacherExists() ||
+        (userExists() && userData().role == 'teacher')
       );
     }
 
-    // فريق العمل (مشرف / دعم فني / معلم)
-    function isStaff() {
-      return isSupervisor() || isTechSupport() || isTeacher();
+    function isTeacherOfCircle(circleId) {
+      return isTeacher() && circleId is string && (
+        (request.auth.uid == 'NSmjSrHJZ6Ozr23TgdRms2qvPI32' &&
+          (circleId == 'circle_saeed' || circleId == 'circle_omar_abdulaziz')) ||
+        (teacherExists() &&
+          get(teacherPath()).data.circleIds is list &&
+          circleId in get(teacherPath()).data.circleIds) ||
+        (userExists() && userData().role == 'teacher' && userData().circleId == circleId)
+      );
     }
 
-    // 1. سجلات وبيانات الطلاب
-    match /students/{studentId} {
-      allow read: if isAuthenticated();
-      // يحق للمشرف والمعلم التعديل، كما يحق للطالب تعبئة وتعديل بياناته الشخصية
-      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == studentId);
+    function isStudent() {
+      return isAuthenticated() &&
+        !isAdmin() &&
+        !isSupervisor() &&
+        !isTeacher() && (
+          exists(/databases/$(database)/documents/students/$(request.auth.uid)) ||
+          (userExists() && userData().role == 'student')
+        );
     }
 
-    // 2. الحلقات القرآنية
-    match /circles/{circleId} {
-      allow read: if isAuthenticated();
-      allow write: if isSupervisor() || isTechSupport();
+    function isOwnStudentId(studentId) {
+      return isAuthenticated() && studentId is string && (
+        studentId == request.auth.uid ||
+        (userExists() && userData().role == 'student' && userData().studentId == studentId)
+      );
     }
 
-    // 3. المعلمون
-    match /teachers/{teacherId} {
-      allow read: if isAuthenticated();
-      allow write: if isSupervisor() || isTechSupport();
+    function isOwnTicket(data) {
+      return isAuthenticated() && data.senderId is string && (
+        data.senderId == request.auth.uid ||
+        data.senderId == ('user_' + request.auth.uid) ||
+        (userExists() && userData().role == 'student' && userData().studentId is string && (
+          data.senderId == userData().studentId ||
+          data.senderId == ('user_' + userData().studentId)
+        ))
+      );
     }
 
-    // 4. التقييم اليومي (المعايير الخمسة)
-    match /evaluations/{evalId} {
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+    // -------------------------------------------------------------------------
+    // Entity Validation Helpers (Types, Sizes & Allowlists)
+    // -------------------------------------------------------------------------
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'role']) &&
+        data.keys().hasOnly(['id', 'uid', 'email', 'name', 'role', 'studentId', 'circleId', 'avatar', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.role in ['student', 'teacher', 'supervisor', 'admin'] &&
+        (!('uid' in data) || (data.uid is string && data.uid.size() <= 128)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
+        (!('studentId' in data) || (data.studentId is string && data.studentId.size() <= 128)) &&
+        (!('circleId' in data) || (data.circleId is string && data.circleId.size() <= 128)) &&
+        (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 1000)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
     }
 
-    // 5. سجل عمليات النقاط
-    match /transactions/{transactionId} {
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+    function isValidStudent(data) {
+      return data.keys().hasAll(['id', 'name', 'circleId', 'currentPoints', 'active']) &&
+        data.keys().hasOnly([
+          'id', 'name', 'email', 'circleId', 'currentPoints', 'level', 'streakDays',
+          'attendanceRate', 'memorizationRating', 'active', 'phone', 'parentPhone',
+          'fullNameQuad', 'nationalId', 'nationality', 'birthDate', 'birthPlace', 'age',
+          'schoolName', 'educationalLevel', 'address', 'guardianName', 'guardianPhone',
+          'guardianRelation', 'profileCompleted', 'lastActivityDate', 'consecutiveAbsences',
+          'daysWithoutLog', 'attentionReason'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.circleId is string && data.circleId.size() >= 1 && data.circleId.size() <= 128 &&
+        data.currentPoints is number && data.currentPoints >= 0 && data.currentPoints <= 1000000 &&
+        data.active is bool &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 40)) &&
+        (!('parentPhone' in data) || (data.parentPhone is string && data.parentPhone.size() <= 40)) &&
+        (!('fullNameQuad' in data) || (data.fullNameQuad is string && data.fullNameQuad.size() <= 240)) &&
+        (!('nationalId' in data) || (data.nationalId is string && data.nationalId.size() <= 40)) &&
+        (!('nationality' in data) || (data.nationality is string && data.nationality.size() <= 80)) &&
+        (!('birthDate' in data) || (data.birthDate is string && data.birthDate.size() <= 40)) &&
+        (!('birthPlace' in data) || (data.birthPlace is string && data.birthPlace.size() <= 120)) &&
+        (!('age' in data) || data.age == null || (data.age is number && data.age >= 0 && data.age <= 120)) &&
+        (!('schoolName' in data) || (data.schoolName is string && data.schoolName.size() <= 200)) &&
+        (!('educationalLevel' in data) || (data.educationalLevel is string && data.educationalLevel.size() <= 80)) &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 300)) &&
+        (!('guardianName' in data) || (data.guardianName is string && data.guardianName.size() <= 200)) &&
+        (!('guardianPhone' in data) || (data.guardianPhone is string && data.guardianPhone.size() <= 40)) &&
+        (!('guardianRelation' in data) || (data.guardianRelation is string && data.guardianRelation.size() <= 60)) &&
+        (!('profileCompleted' in data) || data.profileCompleted is bool) &&
+        (!('lastActivityDate' in data) || (data.lastActivityDate is string && data.lastActivityDate.size() <= 64)) &&
+        (!('attentionReason' in data) || (data.attentionReason is string && data.attentionReason.size() <= 300));
     }
 
-    // 6. التحضير والغياب
-    match /attendance/{attendanceId} {
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+    function isValidCircle(data) {
+      return data.keys().hasAll(['id', 'name', 'teacherId', 'teacherName']) &&
+        data.keys().hasOnly(['id', 'name', 'teacherId', 'teacherName', 'schedule', 'studentCount', 'description', 'room']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128 &&
+        data.teacherName is string && data.teacherName.size() >= 1 && data.teacherName.size() <= 200 &&
+        (!('schedule' in data) || (data.schedule is string && data.schedule.size() <= 200)) &&
+        (!('studentCount' in data) || (data.studentCount is number && data.studentCount >= 0 && data.studentCount <= 10000)) &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+        (!('room' in data) || (data.room is string && data.room.size() <= 200));
     }
 
-    // 7. متجر الجوائز
-    match /rewards/{rewardId} {
-      allow read: if isAuthenticated();
-      allow write: if isSupervisor() || isTechSupport();
+    function isValidTeacher(data) {
+      return data.keys().hasAll(['id', 'name', 'circleIds', 'active']) &&
+        data.keys().hasOnly(['id', 'name', 'email', 'circleIds', 'phone', 'active']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.circleIds is list && data.circleIds.size() <= 20 &&
+        (data.circleIds.size() == 0 || data.circleIds[0] is string) &&
+        data.active is bool &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 40));
     }
 
-    // 8. طلبات استبدال الجوائز
-    match /redemptions/{redemptionId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update, delete: if isStaff();
+    function isValidEvaluation(data) {
+      return data.keys().hasAll(['id', 'studentId', 'circleId', 'date']) &&
+        data.keys().hasOnly([
+          'id', 'studentId', 'studentName', 'circleId', 'date', 'dayName', 'weekNumber', 'month',
+          'attendance', 'attendancePoints', 'disciplineScore', 'uniformScore', 'memorizationScore',
+          'revisionScore', 'familyMeetingScore', 'behaviorScore', 'totalPoints', 'pointsAwarded',
+          'notes', 'recordedBy', 'teacherId', 'timestamp'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 &&
+        data.circleId is string && data.circleId.size() >= 1 && data.circleId.size() <= 128 &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 40 &&
+        (!('studentName' in data) || (data.studentName is string && data.studentName.size() <= 200)) &&
+        (!('notes' in data) || data.notes == null || (data.notes is string && data.notes.size() <= 1000)) &&
+        (!('recordedBy' in data) || (data.recordedBy is string && data.recordedBy.size() <= 200)) &&
+        (!('teacherId' in data) || data.teacherId == null || (data.teacherId is string && data.teacherId.size() <= 128)) &&
+        (!('timestamp' in data) || (data.timestamp is string && data.timestamp.size() <= 64));
     }
 
-    // 9. قواعد واحتساب النقاط
-    match /rules/{ruleId} {
-      allow read: if isAuthenticated();
-      allow write: if isSupervisor() || isTechSupport();
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['id', 'studentId', 'amount', 'type', 'date']) &&
+        data.keys().hasOnly([
+          'id', 'studentId', 'studentName', 'amount', 'type', 'reason',
+          'date', 'createdBy', 'createdByRole', 'idempotencyKey'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 &&
+        data.amount is number && data.amount >= -100000 && data.amount <= 100000 &&
+        data.type is string && data.type.size() >= 1 && data.type.size() <= 64 &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 64 &&
+        (!('studentName' in data) || (data.studentName is string && data.studentName.size() <= 200)) &&
+        (!('reason' in data) || (data.reason is string && data.reason.size() <= 500)) &&
+        (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 200)) &&
+        (!('createdByRole' in data) || data.createdByRole in ['student', 'teacher', 'supervisor', 'admin']) &&
+        (!('idempotencyKey' in data) || data.idempotencyKey == null || (data.idempotencyKey is string && data.idempotencyKey.size() <= 200));
     }
 
-    // 10. سجل العمليات والرقابة (غير قابل للتعديل أو الحذف)
-    match /audit_logs/{logId} {
-      allow read: if isSupervisor() || isTechSupport();
-      allow create: if isAuthenticated();
-      allow update, delete: if false;
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['id', 'studentId', 'circleId', 'date', 'status']) &&
+        data.keys().hasOnly(['id', 'studentId', 'studentName', 'circleId', 'date', 'session', 'status', 'pointsAwarded', 'recordedBy', 'timestamp']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 &&
+        data.circleId is string && data.circleId.size() >= 1 && data.circleId.size() <= 128 &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 40 &&
+        data.status in ['present', 'absent', 'excused'];
     }
 
-    // 11. المستخدمون: كل شخص يقرأ مستند حسابه، ولا يستطيع تغيير دوره بنفسه
+    function isValidReward(data) {
+      return data.keys().hasAll(['id', 'title', 'costPoints', 'remainingQuantity', 'available']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'description', 'costPoints', 'emoji', 'imageUrl',
+          'totalQuantity', 'remainingQuantity', 'available', 'category',
+          'originalValueSar', 'expiresAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.costPoints is number && data.costPoints >= 0 && data.costPoints <= 1000000 &&
+        data.remainingQuantity is number && data.remainingQuantity >= 0 && data.remainingQuantity <= 1000000 &&
+        data.available is bool &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 1000)) &&
+        (!('emoji' in data) || (data.emoji is string && data.emoji.size() <= 32)) &&
+        (!('imageUrl' in data) || data.imageUrl == null || (data.imageUrl is string && data.imageUrl.size() <= 1000));
+    }
+
+    function isValidRedemption(data) {
+      return data.keys().hasAll(['id', 'studentId', 'rewardId', 'rewardCost', 'status', 'requestDate']) &&
+        data.keys().hasOnly([
+          'id', 'studentId', 'studentName', 'circleName', 'rewardId', 'rewardTitle',
+          'rewardCost', 'rewardEmoji', 'status', 'requestDate', 'updatedDate',
+          'handledBy', 'rejectionReason', 'refunded'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 &&
+        data.rewardId is string && data.rewardId.size() >= 1 && data.rewardId.size() <= 128 &&
+        data.rewardCost is number && data.rewardCost >= 0 && data.rewardCost <= 1000000 &&
+        data.status in ['pending', 'approved', 'ready', 'delivered', 'rejected'] &&
+        data.requestDate is string && data.requestDate.size() >= 1 && data.requestDate.size() <= 64 &&
+        (!('rejectionReason' in data) || data.rejectionReason == null || (data.rejectionReason is string && data.rejectionReason.size() <= 500));
+    }
+
+    function isValidExamNomination(data) {
+      return data.keys().hasAll(['id', 'studentId', 'circleId', 'partsCount', 'status', 'requestDate']) &&
+        data.keys().hasOnly([
+          'id', 'studentId', 'studentName', 'circleId', 'circleName', 'teacherId',
+          'teacherName', 'partsCount', 'partsDescription', 'notes', 'status',
+          'requestDate', 'createdAt', 'updatedAt', 'completedAt', 'handledBy', 'cancellationReason'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 &&
+        data.circleId is string && data.circleId.size() >= 1 && data.circleId.size() <= 128 &&
+        data.partsCount is number && data.partsCount >= 1 && data.partsCount <= 30 &&
+        data.status in ['pending', 'completed', 'cancelled'] &&
+        data.requestDate is string && data.requestDate.size() >= 1 && data.requestDate.size() <= 64 &&
+        (!('notes' in data) || data.notes == null || (data.notes is string && data.notes.size() <= 1000)) &&
+        (!('cancellationReason' in data) || data.cancellationReason == null || (data.cancellationReason is string && data.cancellationReason.size() <= 500));
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'actorId', 'actorName', 'actorRole', 'action', 'timestamp']) &&
+        data.keys().hasOnly(['id', 'actorId', 'actorName', 'actorRole', 'action', 'details', 'targetType', 'targetId', 'timestamp']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.actorId is string && data.actorId.size() >= 1 && data.actorId.size() <= 200 &&
+        data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 200 &&
+        data.actorRole in ['student', 'teacher', 'supervisor', 'admin'] &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 200 &&
+        data.timestamp is string && data.timestamp.size() >= 1 && data.timestamp.size() <= 64 &&
+        (!('details' in data) || (data.details is string && data.details.size() <= 1500)) &&
+        (!('targetId' in data) || data.targetId == null || (data.targetId is string && data.targetId.size() <= 128));
+    }
+
+    function isValidSupportTicket(data) {
+      return data.keys().hasAll(['id', 'ticketType', 'priority', 'message', 'senderName', 'senderId', 'createdAt', 'status']) &&
+        data.keys().hasOnly([
+          'id', 'ticketType', 'priority', 'message', 'senderName', 'senderRole',
+          'senderPhone', 'senderEmail', 'senderId', 'createdAt', 'status',
+          'adminReply', 'adminReplyAt', 'adminReplyBy', 'replies', 'unreadByUser', 'userLastReadAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.ticketType is string && data.ticketType.size() >= 1 && data.ticketType.size() <= 60 &&
+        data.priority in ['high', 'medium', 'low'] &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 3000 &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 200 &&
+        data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
+        (!('senderRole' in data) || data.senderRole in ['student', 'teacher', 'supervisor', 'admin']) &&
+        (!('senderPhone' in data) || data.senderPhone == null || (data.senderPhone is string && data.senderPhone.size() <= 40)) &&
+        (!('senderEmail' in data) || data.senderEmail == null || (data.senderEmail is string && data.senderEmail.size() <= 200)) &&
+        data.createdAt is string && data.createdAt.size() >= 1 && data.createdAt.size() <= 64 &&
+        data.status in ['new', 'in_progress', 'resolved'] &&
+        (!('adminReply' in data) || data.adminReply == null || (data.adminReply is string && data.adminReply.size() <= 3000)) &&
+        (!('adminReplyAt' in data) || data.adminReplyAt == null || (data.adminReplyAt is string && data.adminReplyAt.size() <= 64)) &&
+        (!('adminReplyBy' in data) || data.adminReplyBy == null || (data.adminReplyBy is string && data.adminReplyBy.size() <= 200)) &&
+        (!('replies' in data) || (data.replies is list && data.replies.size() <= 100)) &&
+        (!('unreadByUser' in data) || data.unreadByUser is bool) &&
+        (!('userLastReadAt' in data) || data.userLastReadAt == null || (data.userLastReadAt is string && data.userLastReadAt.size() <= 64));
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Security Rules
+    // -------------------------------------------------------------------------
+
     match /users/{userId} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isSupervisor() || isTechSupport());
-      allow create: if isAuthenticated() && request.auth.uid == userId
-                    && request.resource.data.role in ['student', 'teacher']
-                    && !(request.resource.data.role == 'teacher' && !isTeacher());
-      allow update: if isSupervisor() || isTechSupport()
-                    || (request.auth.uid == userId && request.resource.data.role == resource.data.role);
-      allow delete: if isSupervisor() || isTechSupport();
+      allow get: if isValidId(userId) && isAuthenticated() && (
+        request.auth.uid == userId || isAdmin() || isSupervisor()
+      );
+      allow list: if isAdmin() || isSupervisor();
+      allow create: if isValidId(userId) && isAuthenticated() && isValidUser(incoming()) && (
+        isAdmin() ||
+        (request.auth.uid == userId && (
+          (userId == 'Z3GsAoWaFqYu6uLl1bVRNoCD5mE2' && incoming().role == 'supervisor') ||
+          (userId == 'rT1eeIfKODWHcFjgIPokVbCEPbB2' && incoming().role == 'admin') ||
+          (teacherExists() && incoming().role == 'teacher') ||
+          (incoming().role == 'student' && (!('studentId' in incoming()) || incoming().studentId == userId))
+        )) ||
+        (isSupervisor() && incoming().role == 'student')
+      );
+      allow update: if isValidId(userId) && isAuthenticated() && isValidUser(incoming()) && (
+        isAdmin() ||
+        (request.auth.uid == userId &&
+          incoming().role == existing().role &&
+          incoming().id == existing().id &&
+          (!('studentId' in existing()) || incoming().studentId == existing().studentId)) ||
+        (isSupervisor() && existing().role == 'student' && incoming().role == 'student')
+      );
+      allow delete: if isValidId(userId) && isAdmin();
     }
 
-    // 12. ترشيحات الاختبار
+    match /students/{studentId} {
+      allow get: if isValidId(studentId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isOwnStudentId(studentId) ||
+        isTeacherOfCircle(existing().circleId)
+      );
+      allow list: if isAdmin() || isSupervisor() || isTeacherOfCircle(existing().circleId);
+      allow create: if isValidId(studentId) && isAuthenticated() && isValidStudent(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(incoming().circleId)
+      );
+      allow update: if isValidId(studentId) && isAuthenticated() && isValidStudent(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isTeacherOfCircle(existing().circleId) &&
+          incoming().id == existing().id &&
+          incoming().circleId == existing().circleId) ||
+        (isOwnStudentId(studentId) &&
+          incoming().id == existing().id &&
+          incoming().circleId == existing().circleId &&
+          incoming().active == existing().active &&
+          incoming().currentPoints <= existing().currentPoints &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'currentPoints', 'lastActivityDate', 'fullNameQuad', 'nationalId', 'nationality',
+            'birthDate', 'birthPlace', 'age', 'schoolName', 'educationalLevel', 'address',
+            'guardianName', 'guardianRelation', 'guardianPhone', 'parentPhone', 'phone',
+            'profileCompleted'
+          ]))
+      );
+      allow delete: if isValidId(studentId) && (isAdmin() || isSupervisor());
+    }
+
+    match /circles/{circleId} {
+      allow get: if isValidId(circleId) && isAuthenticated();
+      allow list: if isAuthenticated();
+      allow create, update: if isValidId(circleId) && isValidCircle(incoming()) && (isAdmin() || isSupervisor());
+      allow delete: if isValidId(circleId) && isAdmin();
+    }
+
+    match /teachers/{teacherId} {
+      allow get: if isValidId(teacherId) && isAuthenticated() && (
+        request.auth.uid == teacherId || isAdmin() || isSupervisor()
+      );
+      allow list: if isAdmin() || isSupervisor();
+      allow create, update: if isValidId(teacherId) && isValidTeacher(incoming()) && (isAdmin() || isSupervisor());
+      allow delete: if isValidId(teacherId) && isAdmin();
+    }
+
+    match /evaluations/{evalId} {
+      allow get: if isValidId(evalId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(existing().circleId) ||
+        isOwnStudentId(existing().studentId)
+      );
+      allow list: if isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(existing().circleId) ||
+        isOwnStudentId(existing().studentId);
+      allow create: if isValidId(evalId) && isAuthenticated() && isValidEvaluation(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(incoming().circleId)
+      );
+      allow update: if isValidId(evalId) && isAuthenticated() && isValidEvaluation(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isTeacherOfCircle(existing().circleId) &&
+          incoming().circleId == existing().circleId &&
+          incoming().studentId == existing().studentId)
+      );
+      allow delete: if isValidId(evalId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(existing().circleId)
+      );
+    }
+
+    match /attendance/{attendanceId} {
+      allow get: if isValidId(attendanceId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(existing().circleId) ||
+        isOwnStudentId(existing().studentId)
+      );
+      allow list: if isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(existing().circleId) ||
+        isOwnStudentId(existing().studentId);
+      allow create: if isValidId(attendanceId) && isAuthenticated() && isValidAttendance(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(incoming().circleId)
+      );
+      allow update: if isValidId(attendanceId) && isAuthenticated() && isValidAttendance(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isTeacherOfCircle(existing().circleId) && incoming().circleId == existing().circleId)
+      );
+      allow delete: if isValidId(attendanceId) && (isAdmin() || isSupervisor());
+    }
+
+    match /transactions/{transactionId} {
+      allow get: if isValidId(transactionId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isOwnStudentId(existing().studentId)
+      );
+      allow list: if isAdmin() ||
+        isSupervisor() ||
+        isOwnStudentId(existing().studentId);
+      allow create: if isValidId(transactionId) && isAuthenticated() && isValidTransaction(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isTeacher() &&
+          exists(/databases/$(database)/documents/students/$(incoming().studentId)) &&
+          isTeacherOfCircle(get(/databases/$(database)/documents/students/$(incoming().studentId)).data.circleId)) ||
+        (isOwnStudentId(incoming().studentId) &&
+          incoming().type == 'reward_redemption' &&
+          incoming().amount < 0)
+      );
+      allow update: if isValidId(transactionId) && isAuthenticated() && isValidTransaction(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isTeacher() &&
+          incoming().studentId == existing().studentId &&
+          exists(/databases/$(database)/documents/students/$(existing().studentId)) &&
+          isTeacherOfCircle(get(/databases/$(database)/documents/students/$(existing().studentId)).data.circleId))
+      );
+      allow delete: if isValidId(transactionId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isTeacher() &&
+          exists(/databases/$(database)/documents/students/$(existing().studentId)) &&
+          isTeacherOfCircle(get(/databases/$(database)/documents/students/$(existing().studentId)).data.circleId))
+      );
+    }
+
+    match /rewards/{rewardId} {
+      allow get: if isValidId(rewardId) && isAuthenticated();
+      allow list: if isAuthenticated();
+      allow create: if isValidId(rewardId) && isAuthenticated() && isValidReward(incoming()) && (
+        isAdmin() || isSupervisor()
+      );
+      allow update: if isValidId(rewardId) && isAuthenticated() && isValidReward(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isStudent() &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['remainingQuantity']) &&
+          incoming().remainingQuantity == existing().remainingQuantity - 1 &&
+          incoming().remainingQuantity >= 0)
+      );
+      allow delete: if isValidId(rewardId) && (isAdmin() || isSupervisor());
+    }
+
+    match /redemptions/{redemptionId} {
+      allow get: if isValidId(redemptionId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isOwnStudentId(existing().studentId)
+      );
+      allow list: if isAdmin() ||
+        isSupervisor() ||
+        isOwnStudentId(existing().studentId);
+      allow create: if isValidId(redemptionId) && isAuthenticated() && isValidRedemption(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        (isStudent() && isOwnStudentId(incoming().studentId) && incoming().status == 'pending')
+      );
+      allow update, delete: if isValidId(redemptionId) && (isAdmin() || isSupervisor());
+    }
+
     match /exam_nominations/{nominationId} {
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+      allow get: if isValidId(nominationId) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(existing().circleId) ||
+        isOwnStudentId(existing().studentId)
+      );
+      allow list: if isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(existing().circleId) ||
+        isOwnStudentId(existing().studentId);
+      allow create: if isValidId(nominationId) && isAuthenticated() && isValidExamNomination(incoming()) && (
+        isAdmin() ||
+        isSupervisor() ||
+        isTeacherOfCircle(incoming().circleId)
+      );
+      allow update, delete: if isValidId(nominationId) && (isAdmin() || isSupervisor());
     }
 
-    // 13. تذاكر الدعم الفني (الإنشاء متاح لأي زائر مسجّل، والإدارة للمشرف والدعم)
+    match /rules/{ruleId} {
+      allow get: if isValidId(ruleId) && isAuthenticated();
+      allow list: if isAuthenticated();
+      allow create, update: if isValidId(ruleId) && (isAdmin() || isSupervisor());
+      allow delete: if isValidId(ruleId) && isAdmin();
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId) && isAuthenticated() && isValidAuditLog(incoming());
+      allow update: if false;
+      allow delete: if isValidId(logId) && (isAdmin() || isSupervisor());
+    }
+
     match /support_tickets/{ticketId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update, delete: if isSupervisor() || isTechSupport();
-    }
-
-    // إغلاق أي مسارات أخرى غير محددة
-    match /{document=**} {
-      allow read, write: if false;
+      allow get: if isValidId(ticketId) && (
+        isAdmin() ||
+        (isSupervisor() && existing().senderRole == 'supervisor') ||
+        isOwnTicket(existing())
+      );
+      allow list: if isAdmin() ||
+        (isSupervisor() && existing().senderRole == 'supervisor') ||
+        isOwnTicket(existing());
+      allow create: if isValidId(ticketId) && isAuthenticated() && isValidSupportTicket(incoming()) && (
+        isAdmin() || isOwnTicket(incoming())
+      );
+      allow update: if isValidId(ticketId) && isAuthenticated() && isValidSupportTicket(incoming()) && (
+        isAdmin() ||
+        (isOwnTicket(existing()) &&
+          incoming().senderId == existing().senderId &&
+          incoming().senderRole == existing().senderRole &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['replies', 'status', 'unreadByUser', 'userLastReadAt']))
+      );
+      allow delete: if isValidId(ticketId) && isAdmin();
     }
   }
 }

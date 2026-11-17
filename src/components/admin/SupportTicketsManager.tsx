@@ -20,7 +20,6 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
-  Play,
 } from 'lucide-react';
 import {
   formatHijriDateTime,
@@ -30,11 +29,6 @@ import {
 import { ConfirmationModal } from '../common/ConfirmationModal';
 import { useToast } from '../../context/ToastContext';
 import { WhatsAppIcon } from '../common/WhatsAppIcon';
-import { PendingTicketStudentAction } from './StudentsManagement';
-
-interface SupportTicketsManagerProps {
-  onExecuteStudentAction?: (action: PendingTicketStudentAction) => void;
-}
 
 interface TicketGroup {
   groupKey: string;
@@ -51,52 +45,6 @@ const ROLE_LABELS: Record<string, string> = {
   guest: 'زائر (صفحة الدخول)',
 };
 
-const cleanExtractedStudentName = (raw: string): string => {
-  let name = raw
-    .split(/\r?\n/)[0]
-    .replace(/^[:"'«»()\[\]\-–—\s]+/, '')
-    .replace(/^(?:جديد|باسم|اسمه|اسمها|يدعى|تدعى|وهو|وهي|التالي|الآتي)\s+/, '')
-    .replace(/\s+(?:من|في|إلى|الى|ل|ب)\s*حلقة[\s\S]*$/i, '')
-    .replace(/\s+(?:برقم|جوال|رقم|هوية|وشكرا|شكراً|شكرا|جزاكم)[\s\S]*$/i, '')
-    .replace(/[:"'«»()\[\].,،!؟\-–—\s]+$/g, '')
-    .trim();
-
-  const words = name.split(/\s+/).filter(Boolean);
-  if (words.length > 5) {
-    name = words.slice(0, 4).join(' ');
-  }
-  return name;
-};
-
-const detectStudentTicketAction = (
-  message: string
-): { type: 'add' | 'delete'; studentName: string } | null => {
-  const text = (message || '').trim();
-  if (!text) return null;
-
-  const deleteMatch = text.match(
-    /(?:حذف|احذف|إزالة|ازالة|مسح|شطب)\s+(?:ال)?طالب(?:\s+(?:باسم|اسمه|يدعى))?\s*[:\-–—]?\s*([^\n\r]+)/i
-  );
-  if (deleteMatch?.[1]) {
-    const studentName = cleanExtractedStudentName(deleteMatch[1]);
-    if (studentName.length >= 2) {
-      return { type: 'delete', studentName };
-    }
-  }
-
-  const addMatch = text.match(
-    /(?:(?:إضافة|اضافة|أضف|اضف|تسجيل|إدخال|ادخال)\s+(?:ال)?طالب(?:\s+جديد)?|طالب\s+جديد)(?:\s+(?:باسم|اسمه|يدعى))?\s*[:\-–—]?\s*([^\n\r]+)/i
-  );
-  if (addMatch?.[1]) {
-    const studentName = cleanExtractedStudentName(addMatch[1]);
-    if (studentName.length >= 2) {
-      return { type: 'add', studentName };
-    }
-  }
-
-  return null;
-};
-
 const getSenderGroupKey = (t: SupportTicket): string => {
   if (t.senderId && t.senderId !== 'guest') {
     return `id:${t.senderId}`;
@@ -104,9 +52,7 @@ const getSenderGroupKey = (t: SupportTicket): string => {
   return `name:${(t.senderName || '').trim()}::role:${t.senderRole || 'guest'}`;
 };
 
-export const SupportTicketsManager: React.FC<SupportTicketsManagerProps> = ({
-  onExecuteStudentAction,
-}) => {
+export const SupportTicketsManager: React.FC = () => {
   const [filterType, setFilterType] = useState<string>('all');
   const [filterPriority, setFilterPriority] = useState<'all' | 'high' | 'other'>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
@@ -327,7 +273,6 @@ export const SupportTicketsManager: React.FC<SupportTicketsManagerProps> = ({
     const isGuest = ticket.senderRole === 'guest' || ticket.senderId === 'guest';
     const relativeTime = formatRelativeTimeArabic(ticket.createdAt);
     const isOverdue = ticket.status !== 'resolved' && isOlderThanHours(ticket.createdAt, 24);
-    const quickAction = ticket.status !== 'resolved' ? detectStudentTicketAction(ticket.message) : null;
 
     return (
       <div
@@ -531,7 +476,7 @@ export const SupportTicketsManager: React.FC<SupportTicketsManagerProps> = ({
             <div />
           )}
 
-          {/* Actions: Segmented Status + Execute + Reply */}
+          {/* Actions: Segmented Status + Reply */}
           <div className="flex items-center gap-2 flex-wrap">
             {/* Segmented Status Buttons: جديدة · قيد المعالجة · تمت */}
             <div
@@ -573,29 +518,6 @@ export const SupportTicketsManager: React.FC<SupportTicketsManagerProps> = ({
                 تمت
               </button>
             </div>
-
-            {/* Quick "تنفيذ" Button for Add/Delete Student Requests */}
-            {quickAction && onExecuteStudentAction && (
-              <button
-                type="button"
-                onClick={() =>
-                  onExecuteStudentAction({
-                    ticketId: ticket.id,
-                    type: quickAction.type,
-                    studentName: quickAction.studentName,
-                  })
-                }
-                title={
-                  quickAction.type === 'add'
-                    ? `تنفيذ إضافة الطالب: ${quickAction.studentName}`
-                    : `تنفيذ حذف الطالب: ${quickAction.studentName}`
-                }
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[40px] rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-extrabold shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
-              >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>تنفيذ</span>
-              </button>
-            )}
 
             {/* In-Site Reply Toggle Button */}
             <button
