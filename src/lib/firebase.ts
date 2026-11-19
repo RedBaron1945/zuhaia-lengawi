@@ -8,6 +8,7 @@ import {
   CACHE_SIZE_UNLIMITED,
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
+import { getAnalytics, isSupported, Analytics } from 'firebase/analytics';
 
 // Your web app's Firebase configuration provided by user
 export const firebaseConfig = {
@@ -17,6 +18,7 @@ export const firebaseConfig = {
   storageBucket: "zuhaia-lengawi.firebasestorage.app",
   messagingSenderId: "926937604159",
   appId: "1:926937604159:web:56bfbcf376e7d6a8cd988a",
+  measurementId: "G-TDRM5SJJ25"
 };
 
 // Initialize Firebase app singleton
@@ -40,3 +42,21 @@ try {
 
 export const db = firestoreDb;
 export const auth = getAuth(app);
+
+// Initialize Google Analytics safely (browser-only & guarded by isSupported)
+export let analytics: Analytics | null = null;
+export const analyticsReady: Promise<Analytics | null> =
+  typeof window !== 'undefined'
+    ? isSupported()
+        .then((supported) => {
+          if (supported) {
+            try {
+              analytics = getAnalytics(app);
+            } catch {
+              analytics = null;
+            }
+          }
+          return analytics;
+        })
+        .catch(() => null)
+    : Promise.resolve(null);

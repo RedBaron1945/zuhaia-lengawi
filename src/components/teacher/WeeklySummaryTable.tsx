@@ -1,7 +1,15 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { Student, EvaluationRecord, Circle } from '../../types';
-import { WeekDayInfo, shiftWeek, getWeekRangeText, formatISODate } from '../../utils/dateUtils';
-import { Award, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Search, X, Layers } from 'lucide-react';
+import {
+  WeekDayInfo,
+  shiftWeek,
+  getWeekRangeText,
+  formatISODate,
+  getCircleDaysOfWeek,
+  isBeforeRecordingStart,
+  isDateOpenForRecording,
+} from '../../utils/dateUtils';
+import { Award, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Search, X, Layers, Lock } from 'lucide-react';
 
 interface WeeklySummaryTableProps {
   students: Student[];
@@ -51,14 +59,26 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
   const totalCircleDays = weekDays.length; // 4 circle days (Sunday - Wednesday)
   const maxWeeklyPoints = totalCircleDays * 10; // 40 points max
 
+  const canGoPrevWeek = useMemo(() => {
+    if (!currentWeekStart) return false;
+    const prevDays = getCircleDaysOfWeek(shiftWeek(currentWeekStart, -1));
+    return prevDays.some((d) => isDateOpenForRecording(d.date, todayISO));
+  }, [currentWeekStart, todayISO]);
+
+  const canGoNextWeek = useMemo(() => {
+    if (!currentWeekStart) return false;
+    const nextDays = getCircleDaysOfWeek(shiftWeek(currentWeekStart, 1));
+    return nextDays.some((d) => isDateOpenForRecording(d.date, todayISO));
+  }, [currentWeekStart, todayISO]);
+
   const handlePrevWeek = () => {
-    if (currentWeekStart && onWeekChange) {
+    if (currentWeekStart && onWeekChange && canGoPrevWeek) {
       onWeekChange(shiftWeek(currentWeekStart, -1));
     }
   };
 
   const handleNextWeek = () => {
-    if (currentWeekStart && onWeekChange) {
+    if (currentWeekStart && onWeekChange && canGoNextWeek) {
       onWeekChange(shiftWeek(currentWeekStart, 1));
     }
   };
@@ -105,6 +125,8 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
           status,
           isToday: d.date === todayISO,
           isFuture: d.date > todayISO,
+          isBeforeStart: isBeforeRecordingStart(d.date),
+          isLocked: !isDateOpenForRecording(d.date, todayISO),
         };
       });
 
@@ -145,8 +167,17 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
           <button
             type="button"
             onClick={handlePrevWeek}
-            className="w-10 h-10 min-w-[40px] min-h-[40px] rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 shadow-2xs"
-            title="الأسبوع السابق"
+            disabled={!canGoPrevWeek}
+            className={`w-10 h-10 min-w-[40px] min-h-[40px] rounded-2xl border flex items-center justify-center transition-all shrink-0 shadow-2xs ${
+              canGoPrevWeek
+                ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800 active:scale-95 cursor-pointer'
+                : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed opacity-60'
+            }`}
+            title={
+              canGoPrevWeek
+                ? 'الأسبوع السابق'
+                : 'بداية الرصد يوم الأحد 15 نوفمبر — الأسابيع السابقة مغلقة'
+            }
             aria-label="الأسبوع السابق"
           >
             <ChevronRight className="w-5 h-5 stroke-[2.5]" />
@@ -164,8 +195,17 @@ export const WeeklySummaryTable: React.FC<WeeklySummaryTableProps> = ({
           <button
             type="button"
             onClick={handleNextWeek}
-            className="w-10 h-10 min-w-[40px] min-h-[40px] rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 shadow-2xs"
-            title="الأسبوع التالي"
+            disabled={!canGoNextWeek}
+            className={`w-10 h-10 min-w-[40px] min-h-[40px] rounded-2xl border flex items-center justify-center transition-all shrink-0 shadow-2xs ${
+              canGoNextWeek
+                ? 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800 active:scale-95 cursor-pointer'
+                : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed opacity-60'
+            }`}
+            title={
+              canGoNextWeek
+                ? 'الأسبوع التالي'
+                : 'الأسابيع القادمة مغلقة حتى يحين موعدها'
+            }
             aria-label="الأسبوع التالي"
           >
             <ChevronLeft className="w-5 h-5 stroke-[2.5]" />
@@ -339,6 +379,8 @@ interface DayScoreItem {
   status: 'complete' | 'partial' | 'unrecorded';
   isToday: boolean;
   isFuture: boolean;
+  isBeforeStart: boolean;
+  isLocked: boolean;
 }
 
 interface ProcessedStudentRow {
@@ -425,8 +467,8 @@ const StudentWeeklyRow = React.memo<StudentWeeklyRowProps>(({
               ? 'bg-amber-400'
               : 'bg-slate-300';
 
-          const cardToneClass = ds.isFuture
-            ? 'bg-slate-50/70 border-slate-200/70 text-slate-400 opacity-45 cursor-not-allowed pointer-events-none'
+          const cardToneClass = ds.isLocked
+            ? 'bg-slate-50/70 border-slate-200/70 text-slate-400 opacity-50 cursor-not-allowed pointer-events-none'
             : ds.isToday
             ? 'bg-teal-50/50 border-2 border-teal-600 ring-1 ring-teal-500/20 text-slate-900 hover:bg-teal-50 cursor-pointer'
             : ds.status === 'complete'
@@ -439,21 +481,27 @@ const StudentWeeklyRow = React.memo<StudentWeeklyRowProps>(({
             <button
               key={ds.date}
               type="button"
-              disabled={ds.isFuture}
+              disabled={ds.isLocked}
               onClick={() => {
-                if (!ds.isFuture) {
+                if (!ds.isLocked) {
                   onSelectDay(ds.date);
                 }
               }}
               className={`px-1 py-1.5 rounded-xl border text-center transition-all min-h-[48px] flex flex-col items-center justify-center gap-0.5 active:scale-95 ${cardToneClass}`}
               title={
-                ds.isFuture
-                  ? `${ds.dayName} ${ds.hijriDayNumber} هـ (يوم قادم)`
+                ds.isBeforeStart
+                  ? `${ds.dayName} — مغلق (يبدأ الرصد من الأحد 15 نوفمبر)`
+                  : ds.isFuture
+                  ? `${ds.dayName} — مغلق (يفتح في موعده)`
                   : `${ds.dayName} ${ds.hijriDayNumber} هـ — انقر للرصد`
               }
             >
               <div className="flex items-center justify-center gap-1">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
+                {ds.isLocked ? (
+                  <Lock className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                ) : (
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
+                )}
                 <span className="text-[11px] font-extrabold leading-tight truncate">
                   {ds.dayShort}
                 </span>

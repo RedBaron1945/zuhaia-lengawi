@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Student } from '../../types';
+import { Student, StudentIdType, STUDENT_ID_TYPE_LABELS, getStudentIdFieldLabel } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
@@ -39,6 +39,7 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
 
   // Form Fields State (empty by default until user fills them in)
   const [fullNameQuad, setFullNameQuad] = useState(student.fullNameQuad || student.name || '');
+  const [idType, setIdType] = useState<StudentIdType>(student.idType || 'national_id');
   const [nationalId, setNationalId] = useState(student.nationalId || '');
   const [nationality, setNationality] = useState(student.nationality || '');
   const [birthDate, setBirthDate] = useState(student.birthDate || '');
@@ -101,12 +102,13 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
         setErrorMsg('يرجى إدخال اسم الطالب كاملاً (ثلاثي أو رباعي على الأقل)');
         return false;
       }
-      if (!nationalId.trim()) {
-        setErrorMsg('يرجى إدخال رقم الهوية الوطنية أو الإقامة');
+      const trimmedId = nationalId.trim();
+      if (!trimmedId) {
+        setErrorMsg(`يرجى إدخال ${getStudentIdFieldLabel(idType)}`);
         return false;
       }
-      if (!/^\d{10}$/.test(nationalId.trim())) {
-        setErrorMsg('رقم الهوية / الإقامة يجب أن يتكون من 10 أرقام');
+      if (idType === 'national_id' && !/^\d{10}$/.test(trimmedId)) {
+        setErrorMsg('رقم الهوية / الإقامة يجب أن يتكون من 10 أرقام فقط');
         return false;
       }
       if (!nationality.trim()) {
@@ -183,7 +185,8 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
     const updatedStudent: Student = {
       ...student,
       fullNameQuad: fullNameQuad.trim(),
-      nationalId: nationalId.trim(),
+      idType,
+      nationalId: nationalId.trim().slice(0, 120),
       nationality: nationality.trim(),
       birthDate: birthDate,
       birthPlace: birthPlace.trim(),
@@ -356,25 +359,92 @@ export const StudentOnboardingModal: React.FC<StudentOnboardingModalProps> = ({
                     className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-medium"
                   />
                   <span className="text-[10px] text-slate-400 mt-0.5 block">
-                    يُرجى كتابة الاسم الرباعي كما هو مسجل في الهوية الوطنية أو الإقامة.
+                    يُرجى كتابة الاسم الرباعي كما هو مسجل في الوثيقة الرسمية.
                   </span>
                 </div>
 
-                {/* 2. رقم الهوية */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-800 mb-1 flex items-center gap-1.5">
+                {/* 2. نوع الوثيقة ورقمها */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-800 flex items-center gap-1.5">
                     <CreditCard className="w-3.5 h-3.5 text-teal-700" />
-                    <span>رقم الهوية الوطنية أو الإقامة <span className="text-rose-500">*</span></span>
+                    <span>نوع الوثيقة ورقمها <span className="text-rose-500">*</span></span>
                   </label>
-                  <input
-                    type="tel"
-                    required
-                    maxLength={10}
-                    value={nationalId}
-                    onChange={(e) => setNationalId(e.target.value.replace(/\D/g, ''))}
-                    placeholder=""
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-bold tabular-nums"
-                  />
+
+                  {/* 3 Choices: الهوية/الإقامة · تأشيرة زيارة · جواز السفر */}
+                  <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="نوع الوثيقة">
+                    {(['national_id', 'visit_visa', 'passport'] as StudentIdType[]).map((typeOption) => {
+                      const isSelected = idType === typeOption;
+                      return (
+                        <button
+                          key={typeOption}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSelected}
+                          onClick={() => {
+                            setIdType(typeOption);
+                            setErrorMsg(null);
+                            if (typeOption === 'national_id') {
+                              const normalizedDigits = nationalId
+                                .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+                                .replace(/\D/g, '')
+                                .slice(0, 10);
+                              setNationalId(normalizedDigits);
+                            }
+                          }}
+                          className={`py-2 px-1.5 rounded-xl text-[11px] sm:text-xs font-bold border transition-all cursor-pointer text-center ${
+                            isSelected
+                              ? 'bg-teal-700 text-white border-teal-700 shadow-2xs'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {STUDENT_ID_TYPE_LABELS[typeOption]}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      {getStudentIdFieldLabel(idType)} <span className="text-rose-500">*</span>
+                    </label>
+                    {idType === 'national_id' ? (
+                      <input
+                        type="tel"
+                        dir="rtl"
+                        inputMode="numeric"
+                        required
+                        maxLength={10}
+                        value={nationalId}
+                        onChange={(e) => {
+                          const normalized = e.target.value
+                            .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+                            .replace(/\D/g, '')
+                            .slice(0, 10);
+                          setNationalId(normalized);
+                        }}
+                        placeholder="أدخل 10 أرقام فقط"
+                        className="w-full px-3.5 py-2.5 text-xs text-right rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-bold tabular-nums"
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        required
+                        value={nationalId}
+                        onChange={(e) => setNationalId(e.target.value)}
+                        placeholder={
+                          idType === 'visit_visa'
+                            ? 'أدخل رقم تأشيرة الزيارة'
+                            : 'أدخل رقم جواز السفر'
+                        }
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-teal-600 focus:ring-1 focus:ring-teal-600 font-bold tabular-nums"
+                      />
+                    )}
+                    {idType === 'national_id' && (
+                      <span className="text-[10px] text-slate-400 mt-0.5 block">
+                        يُقبل 10 أرقام فقط.
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* 3. الجنسية */}

@@ -239,12 +239,13 @@ export const ExamRequestsManager: React.FC<ExamRequestsManagerProps> = ({
         <select
           value={circleFilter}
           onChange={(e) => setCircleFilter(e.target.value)}
-          className="px-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold min-h-[38px] shadow-2xs cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600 shrink-0"
+          aria-label="تصفية حسب الحلقة"
+          className="sm:w-80 px-3 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold min-h-[38px] shadow-2xs cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600 shrink-0"
         >
           <option value="all">جميع الحلقات ({circles.length})</option>
           {circles.map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name} ({c.teacherName})
+              {c.teacherName ? `${c.teacherName} · ${c.name}` : c.name}
             </option>
           ))}
         </select>
@@ -306,9 +307,13 @@ export const ExamRequestsManager: React.FC<ExamRequestsManagerProps> = ({
                         </button>
                       </div>
 
-                      <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                        <span className="font-bold text-teal-800">{nomination.circleName}</span>
-                        <span> · المعلم: {nomination.teacherName}</span>
+                      <p className="truncate mt-0.5 flex flex-wrap items-baseline gap-x-1">
+                        <span className="text-[11px] font-bold text-teal-800">
+                          {nomination.teacherName}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-medium">
+                          · {nomination.circleName}
+                        </span>
                       </p>
                     </div>
                   </div>

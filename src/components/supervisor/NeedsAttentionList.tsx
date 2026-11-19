@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { Student } from '../../types';
+import { Student, Circle, getStudentIdFieldLabel } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import {
@@ -25,6 +25,10 @@ import {
 } from 'lucide-react';
 import { StudentPointsLogModal } from '../common/StudentPointsLogModal';
 import { calculateAge } from '../../utils/dateUtils';
+import {
+  ATTENDANCE_THRESHOLDS,
+  getAttendanceStatusMeta,
+} from '../../utils/attendanceThresholds';
 
 interface NeedsAttentionListProps {
   students: Student[];
@@ -38,8 +42,18 @@ const PAGE_SIZE = 25;
 const VALID_SORTS: SortBy[] = ['points', 'attendance', 'absences'];
 
 export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students }) => {
-  const circles = useMemo(() => repository.getCircles(), []);
-  const validCircleIds = useMemo(() => new Set(circles.map((c) => c.id)), [circles]);
+  const circles = repository.getCircles();
+  const teachers = repository.getTeachers();
+  const validCircleIds = useMemo(() => new Set(repository.getCircles().map((c) => c.id)), []);
+
+  const getCircleTeacherName = (circle?: Circle): string => {
+    if (!circle) return '';
+    if (circle.teacherName?.trim()) return circle.teacherName.trim();
+    const matchedTeacher = teachers.find(
+      (t) => t.id === circle.teacherId || (Array.isArray(t.circleIds) && t.circleIds.includes(circle.id))
+    );
+    return matchedTeacher?.name?.trim() || '';
+  };
 
   // Read initial filters/sort from URL query string
   const readInitialState = () => {
@@ -143,7 +157,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
           badge: 'ملاحظة خاصة',
         };
       }
-      if (student.consecutiveAbsences >= 2) {
+      if (student.consecutiveAbsences >= ATTENDANCE_THRESHOLDS.CONSECUTIVE_ABSENCES_ALERT) {
         return {
           isFlagged: true,
           type: 'absent' as const,
@@ -151,7 +165,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
           badge: 'كثرة غياب',
         };
       }
-      if (student.daysWithoutLog >= 7) {
+      if (student.daysWithoutLog >= ATTENDANCE_THRESHOLDS.DAYS_WITHOUT_LOG_ALERT) {
         return {
           isFlagged: true,
           type: 'inactive' as const,
@@ -159,12 +173,12 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
           badge: 'انقطاع تسميع',
         };
       }
-      if (attStats.hasRecords && attStats.attendanceRate < 70) {
+      if (attStats.hasRecords && attStats.attendanceRate < ATTENDANCE_THRESHOLDS.FOLLOW_UP_MIN) {
         return {
           isFlagged: true,
           type: 'low_attendance' as const,
           label: `انخفاض نسبة الحضور (${attStats.attendanceRate}%)`,
-          badge: 'حضور منخفض',
+          badge: 'يحتاج تدخلاً',
         };
       }
       return {
@@ -388,13 +402,20 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
   };
 
   const maskNationalId = (idStr?: string) => {
-    const base = idStr || '1084920158';
-    if (base.length < 6) return '10****' + base.slice(-2);
-    return base.slice(0, 4) + '****' + base.slice(-2);
+    const base = (idStr || '').trim();
+    if (!base) return '—';
+    if (base.length <= 4) return '****';
+    const prefixLen = Math.min(4, Math.max(2, base.length - 4));
+    return base.slice(0, prefixLen) + '****' + base.slice(-2);
   };
 
   const selectedCircle = circles.find((c) => c.id === circleFilter);
-  const selectedCircleLabel = selectedCircle ? `${selectedCircle.name} · ${selectedCircle.teacherName}` : '';
+  const selectedCircleTeacher = getCircleTeacherName(selectedCircle);
+  const selectedCircleLabel = selectedCircle
+    ? selectedCircleTeacher
+      ? `${selectedCircleTeacher} · ${selectedCircle.name}`
+      : selectedCircle.name
+    : '';
 
   return (
     <div className="space-y-3 pb-28 select-text">
@@ -425,15 +446,18 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
           <select
             value={circleFilter}
             onChange={(e) => setCircleFilter(e.target.value)}
-            aria-label="تصفية حسب الحلقة"
-            className="sm:w-72 px-3 py-2 text-xs sm:text-[13px] rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold min-h-[40px] cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600 shrink-0"
+            aria-label="تصفية حسب المعلم والحلقة"
+            className="sm:w-80 md:w-[340px] px-3 py-2 text-xs sm:text-[13px] rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold min-h-[40px] cursor-pointer focus:bg-white focus:outline-hidden focus:border-teal-600 shrink-0"
           >
             <option value="all">جميع الحلقات</option>
-            {circles.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} · {c.teacherName}
-              </option>
-            ))}
+            {circles.map((c) => {
+              const teacherName = getCircleTeacherName(c);
+              return (
+                <option key={c.id} value={c.id}>
+                  {teacherName ? `${teacherName} · ${c.name}` : c.name}
+                </option>
+              );
+            })}
           </select>
         </div>
 
@@ -458,7 +482,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                   onClick={() => setCircleFilter('all')}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-50 text-teal-900 border border-teal-200 text-[11px] font-bold hover:bg-teal-100 cursor-pointer"
                 >
-                  <span>الحلقة: {selectedCircleLabel}</span>
+                  <span>{selectedCircleLabel}</span>
                   <X className="w-3 h-3" />
                 </button>
               )}
@@ -495,6 +519,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
               const entry = podiumAnalysis.entries[podiumIdx];
               const student = entry.student;
               const circle = circles.find((c) => c.id === student.circleId);
+              const teacherName = getCircleTeacherName(circle);
               const isGold = podiumIdx === 0;
               const medal = podiumIdx === 0 ? '🥇' : podiumIdx === 1 ? '🥈' : '🥉';
 
@@ -529,7 +554,16 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                     {student.name}
                   </span>
 
-                  <span className="text-[11px] text-slate-500 font-medium truncate w-full mt-0.5">
+                  {teacherName && (
+                    <span className="text-[11px] text-slate-700 font-bold truncate w-full mt-0.5">
+                      {teacherName}
+                    </span>
+                  )}
+                  <span
+                    className={`text-[10px] text-slate-400 font-medium truncate w-full ${
+                      !teacherName ? 'mt-0.5' : ''
+                    }`}
+                  >
                     {circle?.name || 'عامة'}
                   </span>
 
@@ -569,9 +603,11 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
         <div className="space-y-2.5">
           {/* Header with Total Count + Mobile Quick Sort Arrows */}
           <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1">
-            <span className="text-xs sm:text-[13px] font-black text-slate-700 tabular-nums">
-              قائمة الطلاب ({rankedStudents.length})
-            </span>
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <span className="text-xs sm:text-[13px] font-black text-slate-700 tabular-nums">
+                قائمة الطلاب ({rankedStudents.length})
+              </span>
+            </div>
 
             {showPodium && (
               <span className="hidden md:inline text-[11px] text-slate-500 font-medium">
@@ -621,7 +657,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                     <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-black text-slate-600">
                       <th className="py-2.5 px-3 w-16 text-center">الترتيب</th>
                       <th className="py-2.5 px-3">الطالب</th>
-                      <th className="py-2.5 px-3">الحلقة</th>
+                      <th className="py-2.5 px-3">المعلم والحلقة</th>
                       <th className="py-2 px-3 w-24 text-center">
                         <button
                           type="button"
@@ -673,6 +709,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                     {paginatedStudents.map((student, index) => {
                       const currentRank = rankOffset + index;
                       const circle = circles.find((c) => c.id === student.circleId);
+                      const teacherName = getCircleTeacherName(circle);
                       const flag = getStudentFlag(student);
                       const stats =
                         studentStatsMap.get(student.id) ||
@@ -715,8 +752,21 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                               )}
                             </div>
                           </td>
-                          <td className="py-2.5 px-3 text-slate-600 font-medium">
-                            {circle?.name || 'عامة'}
+                          <td className="py-2.5 px-3">
+                            {teacherName && (
+                              <div className="text-xs font-bold text-slate-800 leading-snug">
+                                {teacherName}
+                              </div>
+                            )}
+                            <div
+                              className={
+                                teacherName
+                                  ? 'text-[10px] text-slate-500 font-medium mt-0.5'
+                                  : 'text-xs font-semibold text-slate-700 leading-snug'
+                              }
+                            >
+                              {circle?.name || 'عامة'}
+                            </div>
                           </td>
                           <td className="py-2.5 px-3 text-center font-bold tabular-nums">
                             {stats.hasRecords ? (
@@ -749,6 +799,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                 {paginatedStudents.map((student, index) => {
                   const currentRank = rankOffset + index;
                   const circle = circles.find((c) => c.id === student.circleId);
+                  const teacherName = getCircleTeacherName(circle);
                   const flag = getStudentFlag(student);
                   const stats =
                     studentStatsMap.get(student.id) ||
@@ -792,12 +843,25 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                         )}
                       </div>
 
-                      {/* Line 2: Circle + Attendance/Absence + Points */}
-                      <div className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="text-slate-500 font-medium truncate">
-                          {circle?.name || 'عامة'}
-                        </span>
-                        <div className="flex items-center gap-1.5 shrink-0 font-bold tabular-nums">
+                      {/* Line 2: Teacher (primary) & Circle (smaller) + Attendance/Absence + Points */}
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+                        <div className="flex flex-wrap items-baseline gap-x-1">
+                          {teacherName && (
+                            <span className="text-[11px] text-slate-800 font-bold">
+                              {teacherName}
+                            </span>
+                          )}
+                          <span
+                            className={
+                              teacherName
+                                ? 'text-[10px] text-slate-500 font-medium'
+                                : 'text-[11px] text-slate-600 font-medium'
+                            }
+                          >
+                            {teacherName ? `· ${circle?.name || 'عامة'}` : circle?.name || 'عامة'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0 text-[11px] font-bold tabular-nums mr-auto">
                           {stats.hasRecords ? (
                             <>
                               <span className="text-emerald-700">حضور {stats.presentDays}</span>
@@ -865,6 +929,7 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
             {(() => {
               const mStats = repository.getStudentAttendanceStats(selectedStudent.id);
               const circle = circles.find((c) => c.id === selectedStudent.circleId);
+              const teacherName = getCircleTeacherName(circle);
 
               return (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs font-bold">
@@ -904,10 +969,28 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                   {/* نسبة الحضور */}
                   <div className="bg-slate-50 p-2.5 rounded-2xl border border-slate-200">
                     <span className="text-[10px] text-slate-500 block font-bold">نسبة الانضباط</span>
-                    <span className="text-sm font-black text-slate-900 block mt-0.5 tabular-nums">
+                    <span
+                      className={`text-sm font-black block mt-0.5 tabular-nums ${
+                        mStats.hasRecords
+                          ? getAttendanceStatusMeta(mStats.attendanceRate, mStats.hasRecords).textClass
+                          : 'text-slate-400'
+                      }`}
+                    >
                       {mStats.hasRecords ? `${mStats.attendanceRate}%` : '—'}
                     </span>
-                    <span className="text-[9px] text-slate-500 font-medium block truncate">
+                    <span className="text-[9px] text-slate-500 font-bold block">
+                      {getAttendanceStatusMeta(mStats.attendanceRate, mStats.hasRecords).label}
+                    </span>
+                    {teacherName && (
+                      <span className="text-[10px] text-slate-700 font-bold block truncate mt-0.5">
+                        {teacherName}
+                      </span>
+                    )}
+                    <span
+                      className={`text-[9px] text-slate-400 font-medium block truncate ${
+                        !teacherName ? 'mt-0.5' : ''
+                      }`}
+                    >
                       {circle?.name || 'عامة'}
                     </span>
                   </div>
@@ -959,7 +1042,9 @@ export const NeedsAttentionList: React.FC<NeedsAttentionListProps> = ({ students
                   </div>
 
                   <div className="py-1.5 flex items-center justify-between gap-2">
-                    <span className="text-slate-500 font-bold shrink-0">رقم الهوية / الإقامة:</span>
+                    <span className="text-slate-500 font-bold shrink-0">
+                      {getStudentIdFieldLabel(selectedStudent.idType)}:
+                    </span>
                     {selectedStudent.nationalId ? (
                       <div className="flex items-center gap-2">
                         <span className="font-extrabold text-slate-900 tabular-nums">

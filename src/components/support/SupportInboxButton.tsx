@@ -27,7 +27,12 @@ export const SupportInboxButton: React.FC<SupportInboxButtonProps> = ({ classNam
   }
 
   const userTickets = repository.getSupportTicketsForUser(currentUser);
-  const unreadCount = userTickets.filter((t) => t.unreadByUser).length;
+  const userMessages = repository.getSupportMessagesForUser(currentUser);
+  const unreadTicketsCount = userTickets.filter((t) => t.unreadByUser).length;
+  const unreadMessagesCount = userMessages.filter(
+    (m) => !repository.isSupportMessageReadByUser(m.id, currentUser)
+  ).length;
+  const unreadCount = unreadTicketsCount + unreadMessagesCount;
 
   return (
     <>
@@ -39,8 +44,8 @@ export const SupportInboxButton: React.FC<SupportInboxButtonProps> = ({ classNam
             ? 'bg-teal-50 text-teal-800 border border-teal-200 hover:bg-teal-100/80'
             : 'text-slate-500 hover:text-teal-800 hover:bg-slate-100 border border-transparent'
         } ${className}`}
-        title={unreadCount > 0 ? `صندوق الوارد (${unreadCount} رد جديد)` : 'صندوق الوارد (الدعم الفني)'}
-        aria-label={unreadCount > 0 ? `صندوق الوارد، لديك ${unreadCount} رد جديد` : 'صندوق الوارد'}
+        title={unreadCount > 0 ? `صندوق الوارد (${unreadCount} جديد)` : 'صندوق الوارد (الدعم الفني)'}
+        aria-label={unreadCount > 0 ? `صندوق الوارد، لديك ${unreadCount} رسالة جديدة` : 'صندوق الوارد'}
       >
         <Inbox className="w-5 h-5" />
         {unreadCount > 0 && (

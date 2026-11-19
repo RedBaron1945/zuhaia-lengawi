@@ -9,6 +9,11 @@ import { ExamRequestsManager } from './ExamRequestsManager';
 import { BottomNav } from '../common/BottomNav';
 import { useToast } from '../../context/ToastContext';
 import { BarChart3, Gift, ShieldCheck, RefreshCw, Sparkles, BookOpen } from 'lucide-react';
+import {
+  formatArabicCircles,
+  formatArabicStudents,
+  isStudentNeedingAttention,
+} from '../../utils/attendanceThresholds';
 
 interface SupervisorViewProps {
   currentUser: User;
@@ -41,9 +46,8 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
   const pendingExamNominations = repository.getExamNominations({ status: 'pending' });
   const attentionCount = officialStudents.filter((s) => {
     if (!s.active) return false;
-    if (s.attentionReason || s.consecutiveAbsences >= 2 || s.daysWithoutLog >= 7) return true;
     const stats = repository.getStudentAttendanceStats(s.id);
-    return stats.hasRecords && stats.attendanceRate < 70;
+    return isStudentNeedingAttention(s, stats);
   }).length;
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -155,7 +159,7 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
           <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-white/10 backdrop-blur-xs border border-white/15 px-3 py-1.5 rounded-xl text-xs text-white">
             <span className="text-amber-300 text-sm">🕌</span>
             <span className="font-bold text-teal-100 tabular-nums">
-              {circles.length} حلقات قرآنية معتمدة · {activeStudentsCount} طالباً
+              {formatArabicCircles(circles.length)} معتمدة · {formatArabicStudents(activeStudentsCount)}
             </span>
           </div>
         </div>
@@ -223,7 +227,12 @@ export const SupervisorView: React.FC<SupervisorViewProps> = ({ currentUser }) =
           onUpdate={() => setTick((t) => t + 1)}
         />
       )}
-      {activeTab === 'stats' && <SupervisorStats students={officialStudents} />}
+      {activeTab === 'stats' && (
+        <SupervisorStats
+          students={officialStudents}
+          onNavigateToAttention={() => setActiveTab('attention')}
+        />
+      )}
       {activeTab === 'redemptions' && (
         <RedemptionManager supervisorName={currentUser.name} onUpdate={() => setTick((t) => t + 1)} />
       )}

@@ -11,6 +11,25 @@ export interface User {
   createdAt: string;
 }
 
+export type StudentIdType = 'national_id' | 'visit_visa' | 'passport';
+
+export const STUDENT_ID_TYPE_LABELS: Record<StudentIdType, string> = {
+  national_id: 'الهوية / الإقامة',
+  visit_visa: 'تأشيرة زيارة',
+  passport: 'جواز السفر',
+};
+
+export const getStudentIdFieldLabel = (idType?: StudentIdType): string => {
+  switch (idType) {
+    case 'visit_visa':
+      return 'رقم تأشيرة الزيارة';
+    case 'passport':
+      return 'رقم جواز السفر';
+    default:
+      return 'رقم الهوية / الإقامة';
+  }
+};
+
 export interface Student {
   id: string;
   name: string;
@@ -25,6 +44,7 @@ export interface Student {
   phone?: string;
   parentPhone?: string;
   fullNameQuad?: string;
+  idType?: StudentIdType;
   nationalId?: string;
   nationality?: string;
   birthDate?: string; // YYYY-MM-DD
@@ -300,3 +320,31 @@ export interface SupportTicket {
   userLastReadAt?: string;
 }
 
+export type SupportMessageAudience = 'all' | 'teachers' | 'students' | 'supervisors' | 'custom';
+
+export interface SupportMessage {
+  id: string;
+  title?: string;
+  body: string;
+  audienceType: SupportMessageAudience;
+  /**
+   * Keys matched by Firestore array-contains-any queries and security rules:
+   * 'all' | 'role:teacher' | 'role:student' | 'role:supervisor' | 'user:<uid>'
+   */
+  targetKeys: string[];
+  /** Display names of custom recipients (or summary labels) */
+  recipientNames?: string[];
+  recipientCount: number;
+  senderId: string;
+  senderName: string;
+  createdAt: string; // ISO string
+}
+
+export interface SupportMessageRead {
+  id: string; // `${messageId}__${userId}`
+  messageId: string;
+  userId: string;
+  userName: string;
+  userRole: Role;
+  readAt: string; // ISO string
+}

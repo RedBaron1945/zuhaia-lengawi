@@ -34,7 +34,7 @@ export const INITIAL_CIRCLES: Circle[] = [
     teacherId: 'JnW6yM01vfMnh8UjreoTUHLKHnU2',
     teacherName: 'عبد العزيز إبراهيم',
     schedule: 'الأحد إلى الأربعاء (بعد العصر)',
-    studentCount: 22,
+    studentCount: 23,
     room: 'جامع زهية لنجاوي - ركن الزبير بن العوام',
   },
   {
@@ -652,7 +652,7 @@ export const INITIAL_STUDENTS: Student[] = [
     consecutiveAbsences: 0,
     daysWithoutLog: 0,
   },
-  // حلقة الزبير بن العوام (22 طالباً) - المعلم: عبدالعزيز إبراهيم (JnW6yM01vfMnh8UjreoTUHLKHnU2)
+  // حلقة الزبير بن العوام (23 طالباً) - المعلم: عبدالعزيز إبراهيم (JnW6yM01vfMnh8UjreoTUHLKHnU2)
   {
     id: 'ZsLWJam03ONKOIvfncL8TbPPiCj2',
     name: 'ابراهيم عيسى محمد سعيد',
@@ -824,6 +824,20 @@ export const INITIAL_STUDENTS: Student[] = [
   {
     id: 'jfEhlCVzKIbZ96AZPYI9v4U9dOJ2',
     name: 'عبدالله حمد محبوب',
+    email: '',
+    circleId: 'circle_zubair',
+    currentPoints: 0,
+    streakDays: 0,
+    attendanceRate: 100,
+    memorizationRating: 'ممتاز',
+    active: true,
+    lastActivityDate: new Date().toISOString().split('T')[0],
+    consecutiveAbsences: 0,
+    daysWithoutLog: 0,
+  },
+  {
+    id: 'aov19OEotRWlPsLXrQQh5yC97zC3',
+    name: 'عبدالمحسن فلاته',
     email: '',
     circleId: 'circle_zubair',
     currentPoints: 0,

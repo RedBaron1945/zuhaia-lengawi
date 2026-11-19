@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Student } from '../../types';
+import { Student, getStudentIdFieldLabel } from '../../types';
 import { repository } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import {
@@ -34,9 +34,11 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
   const attStats = repository.getStudentAttendanceStats(student.id);
 
   const maskNationalId = (idStr?: string) => {
-    const base = idStr || '1084920158';
-    if (base.length < 6) return '10****' + base.slice(-2);
-    return base.slice(0, 4) + '****' + base.slice(-2);
+    const base = (idStr || '').trim();
+    if (!base) return '—';
+    if (base.length <= 4) return '****';
+    const prefixLen = Math.min(4, Math.max(2, base.length - 4));
+    return base.slice(0, prefixLen) + '****' + base.slice(-2);
   };
 
   const handleShowIdWithAudit = () => {
@@ -163,7 +165,9 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
               </div>
 
               <div className="py-1.5 flex items-center justify-between gap-2">
-                <span className="text-slate-500 font-bold shrink-0">رقم الهوية / الإقامة:</span>
+                <span className="text-slate-500 font-bold shrink-0">
+                  {getStudentIdFieldLabel(student.idType)}:
+                </span>
                 {student.nationalId ? (
                   <div className="flex items-center gap-2">
                     <span className="font-extrabold text-slate-900 tabular-nums">

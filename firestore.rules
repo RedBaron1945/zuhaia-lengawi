@@ -129,7 +129,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'name', 'email', 'circleId', 'currentPoints', 'level', 'streakDays',
           'attendanceRate', 'memorizationRating', 'active', 'phone', 'parentPhone',
-          'fullNameQuad', 'nationalId', 'nationality', 'birthDate', 'birthPlace', 'age',
+          'fullNameQuad', 'idType', 'nationalId', 'nationality', 'birthDate', 'birthPlace', 'age',
           'schoolName', 'educationalLevel', 'address', 'guardianName', 'guardianPhone',
           'guardianRelation', 'profileCompleted', 'lastActivityDate', 'consecutiveAbsences',
           'daysWithoutLog', 'attentionReason'
@@ -143,7 +143,8 @@ service cloud.firestore {
         (!('phone' in data) || (data.phone is string && data.phone.size() <= 40)) &&
         (!('parentPhone' in data) || (data.parentPhone is string && data.parentPhone.size() <= 40)) &&
         (!('fullNameQuad' in data) || (data.fullNameQuad is string && data.fullNameQuad.size() <= 240)) &&
-        (!('nationalId' in data) || (data.nationalId is string && data.nationalId.size() <= 40)) &&
+        (!('idType' in data) || data.idType in ['national_id', 'visit_visa', 'passport']) &&
+        (!('nationalId' in data) || (data.nationalId is string && data.nationalId.size() <= 120)) &&
         (!('nationality' in data) || (data.nationality is string && data.nationality.size() <= 80)) &&
         (!('birthDate' in data) || (data.birthDate is string && data.birthDate.size() <= 40)) &&
         (!('birthPlace' in data) || (data.birthPlace is string && data.birthPlace.size() <= 120)) &&
@@ -320,6 +321,64 @@ service cloud.firestore {
         (!('userLastReadAt' in data) || data.userLastReadAt == null || (data.userLastReadAt is string && data.userLastReadAt.size() <= 64));
     }
 
+    function isValidSupportMessage(data) {
+      return data.keys().hasAll([
+          'id', 'body', 'audienceType', 'targetKeys', 'recipientCount',
+          'senderId', 'senderName', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'title', 'body', 'audienceType', 'targetKeys', 'recipientNames',
+          'recipientCount', 'senderId', 'senderName', 'createdAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        (!('title' in data) || data.title == null || (data.title is string && data.title.size() <= 200)) &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 3000 &&
+        data.audienceType in ['all', 'teachers', 'students', 'supervisors', 'custom'] &&
+        data.targetKeys is list && data.targetKeys.size() >= 1 && data.targetKeys.size() <= 300 &&
+        data.targetKeys[0] is string &&
+        (!('recipientNames' in data) || (
+          data.recipientNames is list && data.recipientNames.size() <= 300 &&
+          (data.recipientNames.size() == 0 || data.recipientNames[0] is string)
+        )) &&
+        data.recipientCount is number && data.recipientCount >= 0 && data.recipientCount <= 10000 &&
+        data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 200 &&
+        data.createdAt is string && data.createdAt.size() >= 1 && data.createdAt.size() <= 64;
+    }
+
+    function canAccessSupportMessage(data) {
+      return isAdmin() || (
+        isAuthenticated() && data.targetKeys is list && (
+          'all' in data.targetKeys ||
+          ('user:' + request.auth.uid) in data.targetKeys ||
+          (isSupervisor() && 'role:supervisor' in data.targetKeys) ||
+          (isTeacher() && 'role:teacher' in data.targetKeys) ||
+          (isStudent() && 'role:student' in data.targetKeys) ||
+          (userExists() && userData().role == 'student' && userData().studentId is string &&
+            ('user:' + userData().studentId) in data.targetKeys)
+        )
+      );
+    }
+
+    function isValidSupportMessageRead(data) {
+      return data.keys().hasAll(['id', 'messageId', 'userId', 'userName', 'userRole', 'readAt']) &&
+        data.keys().hasOnly(['id', 'messageId', 'userId', 'userName', 'userRole', 'readAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.messageId is string && data.messageId.size() >= 1 && data.messageId.size() <= 128 &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 200 &&
+        data.userRole in ['student', 'teacher', 'supervisor', 'admin'] &&
+        data.readAt is string && data.readAt.size() >= 1 && data.readAt.size() <= 64;
+    }
+
+    function isOwnMessageRead(data) {
+      return isAuthenticated() && data.userId is string && (
+        data.userId == request.auth.uid ||
+        (userExists() && userData().role == 'student' && userData().studentId is string &&
+          data.userId == userData().studentId)
+      );
+    }
+
     // -------------------------------------------------------------------------
     // Collection Security Rules
     // -------------------------------------------------------------------------
@@ -375,7 +434,7 @@ service cloud.firestore {
           incoming().active == existing().active &&
           incoming().currentPoints <= existing().currentPoints &&
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'currentPoints', 'lastActivityDate', 'fullNameQuad', 'nationalId', 'nationality',
+            'currentPoints', 'lastActivityDate', 'fullNameQuad', 'idType', 'nationalId', 'nationality',
             'birthDate', 'birthPlace', 'age', 'schoolName', 'educationalLevel', 'address',
             'guardianName', 'guardianRelation', 'guardianPhone', 'parentPhone', 'phone',
             'profileCompleted'
@@ -578,6 +637,26 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['replies', 'status', 'unreadByUser', 'userLastReadAt']))
       );
       allow delete: if isValidId(ticketId) && isAdmin();
+    }
+
+    match /support_messages/{messageId} {
+      allow get: if isValidId(messageId) && canAccessSupportMessage(existing());
+      allow list: if canAccessSupportMessage(existing());
+      allow create: if isValidId(messageId) && isAuthenticated() && isValidSupportMessage(incoming()) && isAdmin();
+      allow update: if isValidId(messageId) && isAuthenticated() && isValidSupportMessage(incoming()) && isAdmin();
+      allow delete: if isValidId(messageId) && isAdmin();
+    }
+
+    match /support_message_reads/{readId} {
+      allow get: if isValidId(readId) && (isAdmin() || isOwnMessageRead(existing()));
+      allow list: if isAdmin() || isOwnMessageRead(existing());
+      allow create: if isValidId(readId) && isAuthenticated() && isValidSupportMessageRead(incoming()) && (
+        isAdmin() ||
+        (isOwnMessageRead(incoming()) &&
+          exists(/databases/$(database)/documents/support_messages/$(incoming().messageId)))
+      );
+      allow update: if isValidId(readId) && isAuthenticated() && isValidSupportMessageRead(incoming()) && isAdmin();
+      allow delete: if isValidId(readId) && isAdmin();
     }
   }
 }

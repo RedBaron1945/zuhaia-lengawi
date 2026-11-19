@@ -65,6 +65,65 @@ export function isCircleDay(dateInput?: Date | string | null): boolean {
 }
 
 /**
+ * First allowed date for teacher daily recording: Sunday, November 15, 2026.
+ * Previous dates remain permanently locked, and future dates stay locked until their day arrives.
+ */
+export const RECORDING_START_DATE = '2026-11-15';
+
+export type RecordingDateLockReason =
+  | 'open'
+  | 'not_circle_day'
+  | 'before_start'
+  | 'future';
+
+export function isBeforeRecordingStart(dateStr: string): boolean {
+  if (!dateStr) return true;
+  return dateStr.split('T')[0] < RECORDING_START_DATE;
+}
+
+export function isFutureDate(
+  dateStr: string,
+  todayStr: string = formatISODate(new Date())
+): boolean {
+  if (!dateStr) return false;
+  return dateStr.split('T')[0] > todayStr;
+}
+
+export function getRecordingDateLockReason(
+  dateStr: string,
+  todayStr: string = formatISODate(new Date())
+): RecordingDateLockReason {
+  if (!isCircleDay(dateStr)) return 'not_circle_day';
+  if (isBeforeRecordingStart(dateStr)) return 'before_start';
+  if (isFutureDate(dateStr, todayStr)) return 'future';
+  return 'open';
+}
+
+export function isDateOpenForRecording(
+  dateStr: string,
+  todayStr: string = formatISODate(new Date())
+): boolean {
+  return getRecordingDateLockReason(dateStr, todayStr) === 'open';
+}
+
+/**
+ * Returns the latest open circle day (Sun–Wed) within [RECORDING_START_DATE, todayStr].
+ */
+export function getLatestOpenCircleDate(
+  todayStr: string = formatISODate(new Date())
+): string {
+  if (todayStr < RECORDING_START_DATE) {
+    return RECORDING_START_DATE;
+  }
+  const d = parseISODate(todayStr);
+  while (d.getDay() > 3) {
+    d.setDate(d.getDate() - 1);
+  }
+  const candidate = formatISODate(d);
+  return candidate < RECORDING_START_DATE ? RECORDING_START_DATE : candidate;
+}
+
+/**
  * Returns the exact Arabic day name for any Date or ISO date string (YYYY-MM-DD).
  * Safely parses ISO dates to avoid UTC offset timezone bugs.
  */

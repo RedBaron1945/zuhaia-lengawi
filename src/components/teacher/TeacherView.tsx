@@ -3,14 +3,17 @@ import { User, Circle, Student, Teacher } from '../../types';
 import { repository, subscribeToDataChanges } from '../../services/storageService';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
-import { DateNavigator } from './DateNavigator';
+import { DateNavigator, DayEvaluationCount } from './DateNavigator';
 import { WeeklySummaryTable } from './WeeklySummaryTable';
 import {
   getSundayOfWeek,
   getCircleDaysOfWeek,
   formatISODate,
+  parseISODate,
   getArabicDayName,
-  isCircleDay,
+  getLatestOpenCircleDate,
+  getRecordingDateLockReason,
+  isDateOpenForRecording,
   WeekDayInfo,
 } from '../../utils/dateUtils';
 import {
@@ -70,6 +73,41 @@ function formatArabicStudentsCount(count: number): string {
   return count === 0 ? 'طلاب' : 'طالب';
 }
 
+function isSavedEvaluationComplete(ev: {
+  attendance?: unknown;
+  memorizationScore?: unknown;
+  revisionScore?: unknown;
+  disciplineScore?: unknown;
+  uniformScore?: unknown;
+  totalPoints?: unknown;
+  pointsAwarded?: unknown;
+}): boolean {
+  let recordedCriteria = 0;
+  if (ev.attendance !== null && ev.attendance !== undefined) recordedCriteria++;
+  if (typeof ev.memorizationScore === 'number') recordedCriteria++;
+  if (typeof ev.revisionScore === 'number') recordedCriteria++;
+  if (typeof ev.disciplineScore === 'number') recordedCriteria++;
+  if (typeof ev.uniformScore === 'number') recordedCriteria++;
+  if (recordedCriteria === 5) return true;
+  if (recordedCriteria > 0) return false;
+  const pts =
+    typeof ev.totalPoints === 'number'
+      ? ev.totalPoints
+      : Number(ev.pointsAwarded) || 0;
+  return pts > 0;
+}
+
+function getLockedDateToastMessage(dateStr: string, todayStr: string): string {
+  const reason = getRecordingDateLockReason(dateStr, todayStr);
+  if (reason === 'before_start') {
+    return 'الأيام السابقة مغلقة؛ يبدأ الرصد من يوم الأحد 15 نوفمبر';
+  }
+  if (reason === 'future') {
+    return 'الأيام القادمة مغلقة حالياً وسيُفتح الرصد عند حلول موعدها';
+  }
+  return 'الرصد متاح فقط لأيام الحلقات من الأحد إلى الأربعاء';
+}
+
 export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   const { logout, switchTeacherCircle, switchUser } = useAuth();
   const { showToast } = useToast();
@@ -84,9 +122,9 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const isPrivileged = currentUser?.role === 'supervisor' || currentUser?.role === 'admin';
 
-  // Date and Week Navigation
+  // Date and Week Navigation (clamped to open recording window starting Sunday Nov 15, 2026)
   const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() =>
-    getSundayOfWeek(new Date())
+    getSundayOfWeek(parseISODate(getLatestOpenCircleDate()))
   );
   const weekDays = getCircleDaysOfWeek(currentWeekStart);
 
@@ -128,28 +166,24 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
       .sort((a, b) => (orderMap.get(a.circleId) ?? 99) - (orderMap.get(b.circleId) ?? 99));
   }, [activeCircleIds, activeCircleIdsSet, tick]);
 
-  // Auto-open target date on load
-  const getInitialDate = (days: WeekDayInfo[], circleIds: string | string[], students: Student[]) => {
+  // Auto-open target open date on load (never selects a locked past or future date)
+  const getInitialDate = (days: WeekDayInfo[]) => {
     const todayStr = formatISODate(new Date());
-    const todayMatch = days.find((d) => d.date === todayStr);
+    const openDays = days.filter((d) => isDateOpenForRecording(d.date, todayStr));
+    if (openDays.length === 0) {
+      return getLatestOpenCircleDate(todayStr);
+    }
 
+    const todayMatch = openDays.find((d) => d.date === todayStr);
     if (todayMatch) {
       return todayMatch.date;
     }
 
-    for (const d of days) {
-      const evals = repository.getEvaluationsForCircleAndDate(circleIds, d.date);
-      const recordedCount = new Set(evals.filter((e) => students.some((s) => s.id === e.studentId)).map((e) => e.studentId)).size;
-      if (students.length > 0 && recordedCount < students.length) {
-        return d.date;
-      }
-    }
-
-    return days[0]?.date || todayStr;
+    return openDays[openDays.length - 1].date;
   };
 
   const [selectedDate, setSelectedDate] = useState<string>(() =>
-    getInitialDate(weekDays, activeCircleIds, allCircleStudents)
+    getInitialDate(weekDays)
   );
 
   const [activeTab, setActiveTab] = useState<'daily' | 'weekly_summary' | 'students_list'>('daily');
@@ -177,15 +211,33 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     return unsub;
   }, []);
 
-  const handleWeekChange = (newWeekStart: Date) => {
+  const handleWeekChange = (newWeekStart: Date, targetDate?: string) => {
+    const todayStr = formatISODate(new Date());
+    const newDays = getCircleDaysOfWeek(newWeekStart);
+    const openDays = newDays.filter((d) => isDateOpenForRecording(d.date, todayStr));
+
+    if (openDays.length === 0) {
+      const sampleDate = newDays[0]?.date || formatISODate(newWeekStart);
+      showToast(getLockedDateToastMessage(sampleDate, todayStr), 'info');
+      return;
+    }
+
     flushPendingSyncs();
     setCurrentWeekStart(newWeekStart);
-    const newDays = getCircleDaysOfWeek(newWeekStart);
-    const initialDate = getInitialDate(newDays, activeCircleIds, allCircleStudents);
-    setSelectedDate(initialDate);
+
+    if (targetDate && isDateOpenForRecording(targetDate, todayStr)) {
+      setSelectedDate(targetDate);
+    } else {
+      setSelectedDate(getInitialDate(newDays));
+    }
   };
 
   const handleSelectDate = (date: string) => {
+    const todayStr = formatISODate(new Date());
+    if (!isDateOpenForRecording(date, todayStr)) {
+      showToast(getLockedDateToastMessage(date, todayStr), 'info');
+      return;
+    }
     if (date !== selectedDate) {
       flushPendingSyncs();
     }
@@ -205,20 +257,47 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     ? repository.getEvaluationsForCircleAndWeek(activeCircleIds, weekDatesList)
     : [];
 
-  // Accurate day evaluation counts (will reflect optimistic drafts for selectedDate below)
-  const dayEvaluationCounts: Record<string, { recorded: number; total: number }> = {};
-  weekDays.forEach((wd) => {
-    const evalsForDay = selectedCircle
-      ? repository.getEvaluationsForCircleAndDate(activeCircleIds, wd.date)
-      : [];
-    const recordedIds = new Set(
-      evalsForDay.filter((e) => currentStudentIds.has(e.studentId)).map((e) => e.studentId)
-    );
-    dayEvaluationCounts[wd.date] = {
-      recorded: Math.min(recordedIds.size, allCircleStudents.length),
-      total: allCircleStudents.length,
-    };
-  });
+  // Full-history day evaluation counts for calendar indicators (completed 5/5 vs partial/missing)
+  const baseDayEvaluationCounts = useMemo(() => {
+    const total = allCircleStudents.length;
+    const byDate = new Map<string, { completedIds: Set<string>; recordedIds: Set<string> }>();
+    const allEvals = repository.getEvaluationsHistory();
+
+    allEvals.forEach((ev) => {
+      if (!ev.date || !currentStudentIds.has(ev.studentId)) return;
+      const dateKey = ev.date.split('T')[0];
+      let bucket = byDate.get(dateKey);
+      if (!bucket) {
+        bucket = { completedIds: new Set<string>(), recordedIds: new Set<string>() };
+        byDate.set(dateKey, bucket);
+      }
+      bucket.recordedIds.add(ev.studentId);
+      if (isSavedEvaluationComplete(ev)) {
+        bucket.completedIds.add(ev.studentId);
+      }
+    });
+
+    const result: Record<string, DayEvaluationCount> = {};
+    byDate.forEach((bucket, dateKey) => {
+      result[dateKey] = {
+        completed: Math.min(bucket.completedIds.size, total),
+        recorded: Math.min(bucket.recordedIds.size, total),
+        total,
+      };
+    });
+
+    weekDays.forEach((wd) => {
+      if (!result[wd.date]) {
+        result[wd.date] = { completed: 0, recorded: 0, total };
+      }
+    });
+
+    return result;
+  }, [allCircleStudents, activeCircleKey, tick, currentWeekStart]);
+
+  const dayEvaluationCounts: Record<string, DayEvaluationCount> = {
+    ...baseDayEvaluationCounts,
+  };
 
   // Draft evaluations state per student
   const getInitialDrafts = (
@@ -427,15 +506,17 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     return count;
   };
 
-  // Reflect buffered drafts immediately in DateNavigator count for selectedDate
-  if (dayEvaluationCounts[selectedDate]) {
+  // Reflect buffered drafts immediately in DateNavigator & Calendar counts for selectedDate
+  {
+    let bufferedCompleted = 0;
     let bufferedRecorded = 0;
     allCircleStudents.forEach((s) => {
-      if (getStudentRecordedCount(s.id, draftEvaluations) > 0) {
-        bufferedRecorded++;
-      }
+      const cnt = getStudentRecordedCount(s.id, draftEvaluations);
+      if (cnt > 0) bufferedRecorded++;
+      if (cnt === 5) bufferedCompleted++;
     });
     dayEvaluationCounts[selectedDate] = {
+      completed: bufferedCompleted,
       recorded: bufferedRecorded,
       total: allCircleStudents.length,
     };
@@ -486,8 +567,8 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
 
   // Action to reset/clear evaluation for a student completely (debounced)
   const handleClearStudentEvaluation = (studentId: string, _studentName: string) => {
-    if (!isSelectedDateCircleDay) {
-      showToast('الرصد متاح فقط لأيام الحلقات من الأحد إلى الأربعاء', 'error');
+    if (!isSelectedDateRecordable) {
+      showToast(getLockedDateToastMessage(selectedDate, todayISO), 'error');
       return;
     }
 
@@ -509,7 +590,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
 
   // Dedicated double-click handler on any criterion button: unconditionally resets that item to null
   const handleDoubleClickCriterion = (studentId: string, key: CriterionType) => {
-    if (!isSelectedDateCircleDay) return;
+    if (!isSelectedDateRecordable) return;
 
     const current = draftEvaluations[studentId] || {
       attendance: null,
@@ -535,8 +616,8 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
 
   // Button «الكل كامل ✅» at the top - with two clicks/second click, it undoes/resets for all!
   const handleFillAllFullScore = () => {
-    if (!isSelectedDateCircleDay) {
-      showToast('الرصد متاح فقط لأيام الحلقات من الأحد إلى الأربعاء', 'error');
+    if (!isSelectedDateRecordable) {
+      showToast(getLockedDateToastMessage(selectedDate, todayISO), 'error');
       return;
     }
 
@@ -591,8 +672,8 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     key: CriterionType,
     targetVal: any
   ) => {
-    if (!isSelectedDateCircleDay) {
-      showToast('الرصد متاح فقط لأيام الحلقات من الأحد إلى الأربعاء', 'error');
+    if (!isSelectedDateRecordable) {
+      showToast(getLockedDateToastMessage(selectedDate, todayISO), 'error');
       return;
     }
 
@@ -625,8 +706,8 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   // Text button «غائب» sets all 5 items to 0 (absent / 0 / 0 / 0 / 0)
   // If already absent, clicking it again (second click) undoes the absence!
   const handleMarkStudentAbsent = (studentId: string, studentName: string) => {
-    if (!isSelectedDateCircleDay) {
-      showToast('الرصد متاح فقط لأيام الحلقات من الأحد إلى الأربعاء', 'error');
+    if (!isSelectedDateRecordable) {
+      showToast(getLockedDateToastMessage(selectedDate, todayISO), 'error');
       return;
     }
 
@@ -664,8 +745,8 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
   // Quick button inside card: set student full score (2 for all)
   // If already full score, clicking it again (second click) undoes full score!
   const handleSetStudentAllTop = (studentId: string, studentName: string) => {
-    if (!isSelectedDateCircleDay) {
-      showToast('الرصد متاح فقط لأيام الحلقات من الأحد إلى الأربعاء', 'error');
+    if (!isSelectedDateRecordable) {
+      showToast(getLockedDateToastMessage(selectedDate, todayISO), 'error');
       return;
     }
 
@@ -700,9 +781,10 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
     scheduleStudentSync(studentId, fullDraft);
   };
 
-  // Non-current day line logic
+  // Recording window & lock status for selected date
   const todayISO = formatISODate(new Date());
-  const isSelectedDateCircleDay = isCircleDay(selectedDate);
+  const selectedDateLockReason = getRecordingDateLockReason(selectedDate, todayISO);
+  const isSelectedDateRecordable = selectedDateLockReason === 'open';
   const dayMatch = weekDays.find((d) => d.date === selectedDate);
   const selectedDayInfo = {
     dayName: dayMatch?.dayName || getArabicDayName(selectedDate),
@@ -710,18 +792,10 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
 
   const handleResetToToday = () => {
     flushPendingSyncs();
-    const now = new Date();
-    const sunday = getSundayOfWeek(now);
-    const days = getCircleDaysOfWeek(sunday);
+    const targetDate = getLatestOpenCircleDate(todayISO);
+    const sunday = getSundayOfWeek(parseISODate(targetDate));
     setCurrentWeekStart(sunday);
-    const todayMatch = days.find((d) => d.date === todayISO);
-    if (todayMatch) {
-      setSelectedDate(todayISO);
-    } else {
-      // If today is Thursday, Friday, or Saturday (non-circle days), snap to Wednesday (last circle day of this week)
-      const targetDate = now.getDay() >= 4 ? days[days.length - 1]?.date : days[0]?.date;
-      setSelectedDate(targetDate || days[0]?.date || todayISO);
-    }
+    setSelectedDate(targetDate);
   };
 
   const allAreFull = useMemo(() => {
@@ -866,6 +940,7 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
           onWeekChange={handleWeekChange}
           onResetToToday={handleResetToToday}
           dayEvaluationCounts={dayEvaluationCounts}
+          totalStudentsCount={allCircleStudents.length}
         />
       </div>
 
@@ -934,22 +1009,28 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
       {/* Content View 1: رصد اليوم — مطوية بشكل افتراضي مع أزرار 2 · 1 · 0 */}
       {activeTab === 'daily' && (
         <div className="space-y-2.5 pb-6">
-          {/* تنبيه في حال اختيار يوم خارج جدول الحلقات (الأحد - الأربعاء) */}
-          {!isSelectedDateCircleDay && (
+          {/* تنبيه في حال كان اليوم مغلقاً (قبل بدء الرصد، أو قادم، أو خارج أيام الحلقات) */}
+          {!isSelectedDateRecordable && (
             <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3 sm:p-3.5 text-xs text-amber-950 font-bold flex items-center justify-between gap-3 shadow-2xs">
               <div className="flex items-center gap-2 min-w-0">
                 <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                <span className="truncate">
-                  يوم ({selectedDayInfo.dayName}) خارج أيام الحلقات المقررة. الرصد متاح فقط من الأحد إلى الأربعاء.
+                <span className="break-words">
+                  {selectedDateLockReason === 'before_start'
+                    ? 'هذا اليوم مغلق — يبدأ الرصد من يوم الأحد 15 نوفمبر.'
+                    : selectedDateLockReason === 'future'
+                    ? 'هذا اليوم مغلق حالياً — يُفتح الرصد عند حلول موعده.'
+                    : `يوم (${selectedDayInfo.dayName}) خارج أيام الحلقات المقررة. الرصد متاح فقط من الأحد إلى الأربعاء.`}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={handleResetToToday}
-                className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs shrink-0 cursor-pointer shadow-2xs transition-all active:scale-95"
-              >
-                الانتقال ليوم الحلقة
-              </button>
+              {isDateOpenForRecording(getLatestOpenCircleDate(todayISO), todayISO) && (
+                <button
+                  type="button"
+                  onClick={handleResetToToday}
+                  className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs shrink-0 cursor-pointer shadow-2xs transition-all active:scale-95"
+                >
+                  الانتقال ليوم الحلقة
+                </button>
+              )}
             </div>
           )}
 
@@ -958,18 +1039,18 @@ export const TeacherView: React.FC<TeacherViewProps> = ({ currentUser }) => {
             <button
               type="button"
               onClick={handleFillAllFullScore}
-              disabled={!isSelectedDateCircleDay}
+              disabled={!isSelectedDateRecordable}
               className={`px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold transition-all min-h-[40px] flex items-center justify-center gap-1.5 border shadow-2xs shrink-0 active:scale-95 ${
                 allAreFull
                   ? 'bg-teal-100 hover:bg-teal-200/80 text-teal-950 border-teal-300'
                   : 'bg-teal-50/90 hover:bg-teal-100/90 text-teal-900 border-teal-200/90'
-              } ${!isSelectedDateCircleDay ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+              } ${!isSelectedDateRecordable ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
               title={
-                isSelectedDateCircleDay
+                isSelectedDateRecordable
                   ? allAreFull
                     ? 'انقر مرة ثانية للتراجع عن رصد جميع الطلاب وإفراغ السجل'
                     : 'تعبئة الدرجة الكاملة (2) لكافة الطلاب — انقر مرة أخرى للتراجع'
-                  : 'الرصد متاح فقط من الأحد إلى الأربعاء'
+                  : getLockedDateToastMessage(selectedDate, todayISO)
               }
             >
               <CheckCheck className="w-4 h-4 text-teal-700 shrink-0" />

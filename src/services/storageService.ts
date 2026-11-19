@@ -17,6 +17,9 @@ import {
   SupportTicket,
   SupportTicketPriority,
   SupportTicketReply,
+  SupportMessage,
+  SupportMessageAudience,
+  SupportMessageRead,
   User,
 } from '../types';
 import {
@@ -32,7 +35,14 @@ import {
   INITIAL_EVALUATIONS,
   normalizeCircleId,
 } from '../data/mockData';
-import { getArabicDayName, isCircleDay } from '../utils/dateUtils';
+import {
+  getArabicDayName,
+  isCircleDay,
+  RECORDING_START_DATE,
+  isBeforeRecordingStart,
+  isDateOpenForRecording,
+  getRecordingDateLockReason,
+} from '../utils/dateUtils';
 import { db, auth } from '../lib/firebase';
 import {
   collection,
@@ -65,6 +75,8 @@ const STORAGE_KEYS = {
   PURGED_MOCK: 'tartil_mock_purged_flag_v2',
   EXAM_NOMINATIONS: 'tartil_exam_nominations_v2',
   SUPPORT_TICKETS: 'tartil_support_tickets_v1',
+  SUPPORT_MESSAGES: 'tartil_support_messages_v1',
+  SUPPORT_MESSAGE_READS: 'tartil_support_message_reads_v1',
   STATIC_CACHE_META: 'tartil_static_cache_meta_v1',
   SESSION_OWNER: 'tartil_session_owner_v1',
   DELETED_STUDENTS: 'tartil_deleted_students_v1',
@@ -214,9 +226,53 @@ function saveItem<T>(key: string, data: T): void {
   }
 }
 
+function extractRecordISODate(
+  dateValue?: string | null,
+  fallbackTexts?: Array<string | undefined | null>
+): string | null {
+  if (dateValue && typeof dateValue === 'string') {
+    const trimmed = dateValue.trim();
+    const base = trimmed.includes('T') ? trimmed.split('T')[0] : trimmed;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(base)) {
+      return base;
+    }
+    const match = trimmed.match(/\d{4}-\d{2}-\d{2}/);
+    if (match) return match[0];
+  }
+  if (fallbackTexts) {
+    for (const txt of fallbackTexts) {
+      if (typeof txt === 'string') {
+        const match = txt.match(/\d{4}-\d{2}-\d{2}/);
+        if (match) return match[0];
+      }
+    }
+  }
+  return null;
+}
+
+function isEvaluationBeforeStart(ev: EvaluationRecord): boolean {
+  const iso = extractRecordISODate(ev.date, [ev.id, ev.timestamp]);
+  return !!iso && iso < RECORDING_START_DATE;
+}
+
+function isTransactionBeforeStart(tx: PointTransaction): boolean {
+  const refDate = extractRecordISODate(undefined, [tx.idempotencyKey, tx.id, tx.reason]);
+  if (refDate && refDate < RECORDING_START_DATE) {
+    return true;
+  }
+  const txDate = extractRecordISODate(tx.date);
+  return !!txDate && txDate < RECORDING_START_DATE;
+}
+
+function isAttendanceBeforeStart(att: AttendanceRecord): boolean {
+  const iso = extractRecordISODate(att.date, [att.id, att.timestamp]);
+  return !!iso && iso < RECORDING_START_DATE;
+}
+
 function computeStudentBalancesMap(transactions: PointTransaction[]): Map<string, number> {
   const byStudent = new Map<string, PointTransaction[]>();
   transactions.forEach((tx) => {
+    if (isTransactionBeforeStart(tx)) return;
     if (tx.studentId && typeof tx.amount === 'number') {
       const list = byStudent.get(tx.studentId);
       if (list) list.push(tx);
@@ -638,6 +694,24 @@ export interface IRepository {
   closeSupportTicket(ticketId: string): Promise<{ success: boolean; message: string }>;
   deleteSupportTicket(ticketId: string): Promise<{ success: boolean; message: string }>;
 
+  // Support Outbound Messages (رسائل الدعم الفني للمستخدمين)
+  getSupportMessages(): SupportMessage[];
+  getSupportMessagesForUser(user: User): SupportMessage[];
+  getSupportMessageReads(messageId?: string): SupportMessageRead[];
+  isSupportMessageReadByUser(messageId: string, user: User): boolean;
+  sendSupportMessage(params: {
+    title?: string;
+    body: string;
+    audienceType: SupportMessageAudience;
+    targetUserIds?: string[];
+    recipientNames?: string[];
+    recipientCount: number;
+    senderId: string;
+    senderName: string;
+  }): { success: boolean; message: string; supportMessage?: SupportMessage };
+  markSupportMessageAsRead(messageId: string, user: User): { success: boolean };
+  deleteSupportMessage(messageId: string): Promise<{ success: boolean; message: string }>;
+
   // Session & Cache Control
   setSessionUser(user: User | null): void;
   refreshStaticCaches(force?: boolean): Promise<void>;
@@ -657,6 +731,9 @@ class FirestoreConnectedRepository implements IRepository {
   private scopedCircleId: string | null = null;
   private scopedCircleIds: Set<string> = new Set();
   private staticInFlight = new Map<string, Promise<void>>();
+  private purgedPreStartDocKeys = new Set<string>();
+  private preStartPurgeRunning = false;
+  private preStartPurgeDoneForSession: string | null = null;
 
   constructor() {
     // 0 Firestore reads at module boot / LoginView — listeners and cached static fetches start only in setSessionUser()
@@ -690,6 +767,8 @@ class FirestoreConnectedRepository implements IRepository {
       localStorage.removeItem(STORAGE_KEYS.REDEMPTIONS);
       localStorage.removeItem(STORAGE_KEYS.EXAM_NOMINATIONS);
       localStorage.removeItem(STORAGE_KEYS.SUPPORT_TICKETS);
+      localStorage.removeItem(STORAGE_KEYS.SUPPORT_MESSAGES);
+      localStorage.removeItem(STORAGE_KEYS.SUPPORT_MESSAGE_READS);
       localStorage.removeItem(STORAGE_KEYS.AUDIT_LOGS);
       const meta = this.getStaticCacheMeta();
       if (meta.audit_logs) {
@@ -1146,6 +1225,91 @@ class FirestoreConnectedRepository implements IRepository {
       debouncedNotifySubscribers();
     } catch (err: any) {
       console.warn('Linked Ali new student sync notice:', err?.message || err);
+    }
+  }
+
+  private async ensureLinkedZubairNewStudentInFirestore(): Promise<void> {
+    try {
+      const user = this.activeUser;
+      if (!user) return;
+
+      const meta = this.getStaticCacheMeta();
+      if (meta.linked_zubair_new_student_v1) return;
+
+      const LINKED_TARGETS: Array<{ id: string; circleId: string }> = [
+        { id: 'aov19OEotRWlPsLXrQQh5yC97zC3', circleId: 'circle_zubair' },
+      ];
+      const activeStudentId = user.studentId || user.id;
+      const teacherCircleIds = user.role === 'teacher' ? this.getTeacherCircleIds(user) : [];
+
+      const relevantTargets =
+        user.role === 'admin' || user.role === 'supervisor'
+          ? LINKED_TARGETS
+          : user.role === 'teacher'
+          ? LINKED_TARGETS.filter((t) => teacherCircleIds.includes(t.circleId))
+          : user.role === 'student'
+          ? LINKED_TARGETS.filter((t) => t.id === activeStudentId)
+          : [];
+
+      if (relevantTargets.length === 0) return;
+
+      const deletedIds = getPersistedDeletedStudentIds();
+      const canWriteStudentDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'teacher';
+      const canWriteUserDoc =
+        user.role === 'admin' || user.role === 'supervisor' || user.role === 'student';
+
+      await Promise.all(
+        relevantTargets.map(async ({ id: sid, circleId }) => {
+          if (deletedIds.has(sid)) return;
+          const seed = INITIAL_STUDENTS.find((s) => s.id === sid);
+          if (!seed) return;
+
+          if (canWriteStudentDoc) {
+            const studentRef = doc(db, 'students', sid);
+            const snap = await getDoc(studentRef);
+            if (!snap.exists()) {
+              await setDoc(studentRef, sanitizeForFirestore(seed));
+            } else {
+              const data = snap.data() as Partial<Student> | undefined;
+              if (normalizeCircleId(data?.circleId) !== circleId || !data?.name) {
+                await setDoc(
+                  studentRef,
+                  {
+                    circleId,
+                    ...(data?.name ? {} : { name: seed.name }),
+                  },
+                  { merge: true }
+                );
+              }
+            }
+          }
+
+          if (canWriteUserDoc) {
+            await setDoc(
+              doc(db, 'users', sid),
+              {
+                id: sid,
+                uid: sid,
+                name: seed.name,
+                role: 'student',
+                studentId: sid,
+                circleId,
+                createdAt: '2026-10-28T00:00:00Z',
+              },
+              { merge: true }
+            );
+          }
+        })
+      );
+
+      const nextMeta = this.getStaticCacheMeta();
+      nextMeta.linked_zubair_new_student_v1 = Date.now();
+      saveItem(STORAGE_KEYS.STATIC_CACHE_META, nextMeta);
+      this.recalculateCircleStudentCounts();
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Linked Zubair new student sync notice:', err?.message || err);
     }
   }
 
@@ -1672,6 +1836,7 @@ class FirestoreConnectedRepository implements IRepository {
         await this.ensureLinkedOmarAliStudentsInFirestore();
         await this.ensureLinkedAbbasStudentsInFirestore();
         await this.ensureLinkedAliNewStudentInFirestore();
+        await this.ensureLinkedZubairNewStudentInFirestore();
         await this.ensureOmarAbdulazizCircleAndStudentsInFirestore();
       }),
     ];
@@ -1931,17 +2096,25 @@ class FirestoreConnectedRepository implements IRepository {
 
     // Start role-scoped real-time Firestore listeners
     this.initScopedFirestoreListeners(user);
+
+    // Permanently purge pre-Nov-15 records in Firestore and reconcile student points strictly from Nov 15 onward
+    if (user.role === 'admin' || user.role === 'supervisor') {
+      void this.purgePreStartRecordsFromFirestore(user);
+    }
+
     debouncedNotifySubscribers();
   }
 
   /**
    * Reconciles currentPoints against transactions ledger strictly within the active role's scope.
+   * Strictly ignores all evaluations and transactions dated before RECORDING_START_DATE (2026-11-15).
    */
   public reconcileStudentPointsFromTransactions(): void {
     try {
-      // 1. Correct any evaluation records where dayName didn't match the actual date
-      const evals = loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, INITIAL_EVALUATIONS);
-      let evalsModified = false;
+      // 1. Filter out any pre-start evaluations and correct dayName mismatches
+      const rawEvals = loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, INITIAL_EVALUATIONS);
+      const evals = rawEvals.filter((e) => !isEvaluationBeforeStart(e));
+      let evalsModified = evals.length !== rawEvals.length;
       evals.forEach((e) => {
         if (e.date) {
           const accurateDay = getArabicDayName(e.date);
@@ -1960,8 +2133,9 @@ class FirestoreConnectedRepository implements IRepository {
         return;
       }
 
-      const rawTransactions = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
-      let txModified = false;
+      const loadedTransactions = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
+      const rawTransactions = loadedTransactions.filter((tx) => !isTransactionBeforeStart(tx));
+      let txModified = rawTransactions.length !== loadedTransactions.length;
       let finalTxs = rawTransactions;
 
       // Cross-check evaluation transactions against evaluations ONLY when evaluations are synced for this scope
@@ -2129,11 +2303,264 @@ class FirestoreConnectedRepository implements IRepository {
         }
       });
 
+      if (txModified && !this.hasEvaluationsScope) {
+        saveItem(STORAGE_KEYS.TRANSACTIONS, finalTxs);
+      }
+
       if (modified) {
         saveItem(STORAGE_KEYS.STUDENTS, students);
       }
     } catch (e) {
       console.warn('Reconciliation notice:', e);
+    }
+  }
+
+  /**
+   * Permanently deletes all evaluations, attendance records, and point transactions
+   * dated before RECORDING_START_DATE (2026-11-15) from Firestore and reconciles every
+   * student's currentPoints & attendance metrics strictly from 2026-11-15 onward.
+   */
+  private async purgePreStartRecordsFromFirestore(user: User): Promise<void> {
+    if (user.role !== 'admin' && user.role !== 'supervisor') return;
+    const sessionKey = this.activeSessionKey;
+    if (!sessionKey || this.preStartPurgeRunning || this.preStartPurgeDoneForSession === sessionKey) {
+      return;
+    }
+
+    this.preStartPurgeRunning = true;
+    try {
+      const [evalSnap, txSnap, attSnap, studentsSnap] = await Promise.all([
+        getDocs(collection(db, 'evaluations')),
+        getDocs(collection(db, 'transactions')),
+        getDocs(collection(db, 'attendance')),
+        getDocs(collection(db, 'students')),
+      ]);
+
+      // Abort if user switched/signed out while fetching
+      if (this.activeSessionKey !== sessionKey) return;
+
+      const deleteTasks: Promise<void>[] = [];
+      const queueDelete = (colName: string, docId: string) => {
+        if (!docId) return;
+        const key = `${colName}:${docId}`;
+        if (this.purgedPreStartDocKeys.has(key)) return;
+        this.purgedPreStartDocKeys.add(key);
+        deletedDocIds.add(docId);
+        deleteTasks.push(deleteFromFirestore(colName, docId));
+      };
+
+      // 1. Purge pre-Nov-15 evaluations
+      const validEvals: EvaluationRecord[] = [];
+      evalSnap.forEach((d) => {
+        const rec = d.data() as EvaluationRecord;
+        const docId = rec?.id || d.id;
+        if (!rec || deletedDocIds.has(docId)) return;
+        if (isEvaluationBeforeStart(rec)) {
+          queueDelete('evaluations', docId);
+          const isoDate = extractRecordISODate(rec.date, [docId, rec.timestamp]);
+          if (rec.studentId && isoDate) {
+            queueDelete('transactions', `tx_eval_${rec.studentId}_${isoDate}`);
+          }
+          return;
+        }
+        validEvals.push(rec);
+      });
+
+      // 2. Purge pre-Nov-15 attendance
+      const validAttendance: AttendanceRecord[] = [];
+      attSnap.forEach((d) => {
+        const rec = d.data() as AttendanceRecord;
+        const docId = rec?.id || d.id;
+        if (!rec || deletedDocIds.has(docId)) return;
+        if (isAttendanceBeforeStart(rec)) {
+          queueDelete('attendance', docId);
+          return;
+        }
+        validAttendance.push(rec);
+      });
+
+      // 3. Purge pre-Nov-15 transactions & deduplicate post-Nov-15 daily-eval transactions against validEvals
+      const validEvalByKey = new Map<string, EvaluationRecord>();
+      validEvals.forEach((ev) => {
+        const isoDate = extractRecordISODate(ev.date, [ev.id, ev.timestamp]);
+        if (ev.studentId && isoDate) {
+          validEvalByKey.set(`${ev.studentId}::${isoDate}`, ev);
+        }
+      });
+
+      const keptOtherTxs: PointTransaction[] = [];
+      const evalTxsByKey = new Map<string, PointTransaction[]>();
+
+      txSnap.forEach((d) => {
+        const tx = d.data() as PointTransaction;
+        const docId = tx?.id || d.id;
+        if (!tx || deletedDocIds.has(docId)) return;
+
+        if (isTransactionBeforeStart(tx)) {
+          queueDelete('transactions', docId);
+          return;
+        }
+
+        const isNonEvalType =
+          tx.type === 'admin_bonus' ||
+          tx.type === 'admin_correction' ||
+          tx.type === 'reward_redemption' ||
+          tx.type === 'refund' ||
+          tx.type === 'attendance';
+
+        const isEvalTx =
+          !isNonEvalType &&
+          (tx.idempotencyKey?.includes('daily_eval') ||
+            tx.id?.includes('eval') ||
+            tx.reason?.startsWith('تقييم يوم') ||
+            tx.reason?.startsWith('إلغاء وحذف تقييم يوم'));
+
+        if (isEvalTx && tx.studentId) {
+          const isoDate = extractRecordISODate(tx.date, [tx.idempotencyKey, tx.id, tx.reason]);
+          if (!isoDate || isoDate < RECORDING_START_DATE) {
+            queueDelete('transactions', docId);
+            return;
+          }
+          const key = `${tx.studentId}::${isoDate}`;
+          const list = evalTxsByKey.get(key) || [];
+          list.push(tx);
+          evalTxsByKey.set(key, list);
+        } else {
+          keptOtherTxs.push(tx);
+        }
+      });
+
+      const finalTxs: PointTransaction[] = [...keptOtherTxs];
+      const syncTxTasks: Promise<void>[] = [];
+
+      evalTxsByKey.forEach((txList, key) => {
+        const matchingEval = validEvalByKey.get(key);
+        const evalScore = matchingEval
+          ? typeof matchingEval.totalPoints === 'number'
+            ? matchingEval.totalPoints
+            : matchingEval.pointsAwarded || 0
+          : 0;
+
+        if (!matchingEval || evalScore <= 0) {
+          txList.forEach((t) => queueDelete('transactions', t.id));
+          return;
+        }
+
+        const primaryTx = txList[0];
+        txList.slice(1).forEach((dup) => queueDelete('transactions', dup.id));
+
+        const isoDate = extractRecordISODate(matchingEval.date) || primaryTx.date;
+        const accurateDay = matchingEval.dayName || getArabicDayName(isoDate);
+        const att =
+          matchingEval.attendance === 'early'
+            ? 'مبكر (2ن)'
+            : matchingEval.attendance === 'late'
+            ? 'متأخر (1ن)'
+            : 'غائب (0ن)';
+        const cleanReason = `تقييم يوم ${accurateDay} (${isoDate}): حضور ${att}، حفظ ${matchingEval.memorizationScore || 0}ن، مراجعة ${matchingEval.revisionScore || 0}ن، انضباط ${matchingEval.disciplineScore || 0}ن، زي ${matchingEval.uniformScore || 0}ن`;
+
+        const consolidatedTx: PointTransaction = {
+          ...primaryTx,
+          amount: evalScore,
+          date: isoDate,
+          reason: cleanReason,
+          idempotencyKey: `daily_eval_${matchingEval.studentId}_${isoDate}`,
+        };
+
+        if (primaryTx.amount !== evalScore || primaryTx.date !== isoDate || primaryTx.reason !== cleanReason) {
+          syncTxTasks.push(syncToFirestore('transactions', consolidatedTx));
+        }
+        finalTxs.push(consolidatedTx);
+      });
+
+      // Ensure every valid post-Nov-15 evaluation with points > 0 has a transaction
+      validEvalByKey.forEach((ev, key) => {
+        if (evalTxsByKey.has(key)) return;
+        const evalScore =
+          typeof ev.totalPoints === 'number' ? ev.totalPoints : ev.pointsAwarded || 0;
+        if (evalScore <= 0) return;
+        const isoDate = extractRecordISODate(ev.date);
+        if (!isoDate || isoDate < RECORDING_START_DATE) return;
+        const accurateDay = ev.dayName || getArabicDayName(isoDate);
+        const att =
+          ev.attendance === 'early'
+            ? 'مبكر (2ن)'
+            : ev.attendance === 'late'
+            ? 'متأخر (1ن)'
+            : 'غائب (0ن)';
+        const newTx: PointTransaction = {
+          id: `tx_eval_${ev.studentId}_${isoDate}`,
+          studentId: ev.studentId,
+          studentName: ev.studentName,
+          amount: evalScore,
+          type: 'memorization',
+          reason: `تقييم يوم ${accurateDay} (${isoDate}): حضور ${att}، حفظ ${ev.memorizationScore || 0}ن، مراجعة ${ev.revisionScore || 0}ن، انضباط ${ev.disciplineScore || 0}ن، زي ${ev.uniformScore || 0}ن`,
+          date: isoDate,
+          createdBy: ev.recordedBy || 'المعلم',
+          createdByRole: 'teacher',
+          idempotencyKey: `daily_eval_${ev.studentId}_${isoDate}`,
+        };
+        finalTxs.push(newTx);
+        syncTxTasks.push(syncToFirestore('transactions', newTx));
+      });
+
+      // Save cleaned collections locally first so attendance stats use post-Nov-15 data only
+      saveItem(STORAGE_KEYS.EVALUATIONS, validEvals);
+      saveItem(STORAGE_KEYS.ATTENDANCE, validAttendance);
+      saveItem(STORAGE_KEYS.TRANSACTIONS, finalTxs);
+
+      // 4. Reconcile every student's currentPoints and attendance stats in Firestore
+      const truePointsByStudent = computeStudentBalancesMap(finalTxs);
+      const deletedStudentIds = getPersistedDeletedStudentIds();
+      const updatedStudentsList: Student[] = [];
+      const syncStudentTasks: Promise<void>[] = [];
+
+      studentsSnap.forEach((d) => {
+        const s = d.data() as Student;
+        if (!s || !s.id || deletedDocIds.has(s.id) || deletedStudentIds.has(s.id)) return;
+
+        const truePoints = truePointsByStudent.get(s.id) || 0;
+        const stats = this.getStudentAttendanceStats(s.id);
+        const nextAttentionReason =
+          stats.consecutiveAbsences >= 3
+            ? `غياب متكرر (${stats.consecutiveAbsences} أيام متتالية)`
+            : s.attentionReason?.startsWith('غياب متكرر')
+            ? undefined
+            : s.attentionReason;
+
+        const changed =
+          s.currentPoints !== truePoints ||
+          s.attendanceRate !== stats.attendanceRate ||
+          s.streakDays !== stats.streakDays ||
+          s.consecutiveAbsences !== stats.consecutiveAbsences ||
+          s.attentionReason !== nextAttentionReason;
+
+        if (changed) {
+          s.currentPoints = truePoints;
+          s.attendanceRate = stats.attendanceRate;
+          s.streakDays = stats.streakDays;
+          s.consecutiveAbsences = stats.consecutiveAbsences;
+          if (nextAttentionReason === undefined) {
+            delete s.attentionReason;
+          } else {
+            s.attentionReason = nextAttentionReason;
+          }
+          syncStudentTasks.push(syncToFirestore('students', s));
+        }
+        updatedStudentsList.push(s);
+      });
+
+      if (updatedStudentsList.length > 0) {
+        saveItem(STORAGE_KEYS.STUDENTS, updatedStudentsList);
+      }
+
+      await Promise.all([...deleteTasks, ...syncTxTasks, ...syncStudentTasks]);
+      this.preStartPurgeDoneForSession = sessionKey;
+      debouncedNotifySubscribers();
+    } catch (err: any) {
+      console.warn('Pre-start records purge notice:', err?.message || err);
+    } finally {
+      this.preStartPurgeRunning = false;
     }
   }
 
@@ -2194,6 +2621,71 @@ class FirestoreConnectedRepository implements IRepository {
         this.unsubscribers.push(unsub);
       };
 
+      const subscribeSupportMessages = (q: ReturnType<typeof query> | ReturnType<typeof collection>) => {
+        const unsub = onSnapshot(
+          q as any,
+          { includeMetadataChanges: false },
+          (snapshot: any) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: SupportMessage[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d: any) => {
+                const msg = d.data() as SupportMessage;
+                if (msg && msg.id && !deletedDocIds.has(msg.id)) {
+                  list.push(msg);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.SUPPORT_MESSAGES, list);
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('support_messages')
+        );
+        this.unsubscribers.push(unsub);
+      };
+
+      const subscribeSupportMessageReads = (q: ReturnType<typeof query> | ReturnType<typeof collection>) => {
+        const unsub = onSnapshot(
+          q as any,
+          { includeMetadataChanges: false },
+          (snapshot: any) => {
+            if (snapshot.metadata.hasPendingWrites) return;
+            recordSnapshotReceived(snapshot.metadata.fromCache);
+            const list: SupportMessageRead[] = [];
+            if (!snapshot.empty) {
+              snapshot.forEach((d: any) => {
+                const rec = d.data() as SupportMessageRead;
+                if (rec && rec.id && !deletedDocIds.has(rec.id)) {
+                  list.push(rec);
+                }
+              });
+            }
+            saveItem(STORAGE_KEYS.SUPPORT_MESSAGE_READS, list);
+            debouncedNotifySubscribers();
+          },
+          handleSnapshotError('support_message_reads')
+        );
+        this.unsubscribers.push(unsub);
+      };
+
+      const getCanonicalMessageUserId = (u: User): string => {
+        if (u.role === 'student') {
+          return u.studentId || u.id.replace(/^user_/, '');
+        }
+        return u.id;
+      };
+
+      const buildMessageTargetKeys = (u: User): string[] => {
+        const keys = new Set<string>(['all']);
+        if (u.role === 'student') keys.add('role:student');
+        else if (u.role === 'teacher') keys.add('role:teacher');
+        else if (u.role === 'supervisor') keys.add('role:supervisor');
+        const canonicalId = getCanonicalMessageUserId(u);
+        if (canonicalId) keys.add(`user:${canonicalId}`);
+        return Array.from(keys).slice(0, 10);
+      };
+
       const buildSenderIds = (u: User): string[] => {
         const ids = new Set<string>();
         if (u.id) ids.add(u.id);
@@ -2245,7 +2737,7 @@ class FirestoreConnectedRepository implements IRepository {
             if (!snapshot.empty) {
               snapshot.forEach((d) => {
                 const rec = d.data() as EvaluationRecord;
-                if (rec && rec.id && !deletedDocIds.has(rec.id)) {
+                if (rec && rec.id && !deletedDocIds.has(rec.id) && !isEvaluationBeforeStart(rec)) {
                   list.push(rec);
                 }
               });
@@ -2270,7 +2762,7 @@ class FirestoreConnectedRepository implements IRepository {
             if (!snapshot.empty) {
               snapshot.forEach((d) => {
                 const tx = d.data() as PointTransaction;
-                if (tx && tx.id && !deletedDocIds.has(tx.id)) {
+                if (tx && tx.id && !deletedDocIds.has(tx.id) && !isTransactionBeforeStart(tx)) {
                   list.push(tx);
                 }
               });
@@ -2313,6 +2805,15 @@ class FirestoreConnectedRepository implements IRepository {
             query(collection(db, 'support_tickets'), where('senderId', 'in', senderIds))
           );
         }
+
+        // 6. Support messages addressed to this student / all students / all users
+        const studentMsgKeys = buildMessageTargetKeys(user);
+        subscribeSupportMessages(
+          query(collection(db, 'support_messages'), where('targetKeys', 'array-contains-any', studentMsgKeys))
+        );
+        subscribeSupportMessageReads(
+          query(collection(db, 'support_message_reads'), where('userId', '==', getCanonicalMessageUserId(user)))
+        );
         return;
       }
 
@@ -2369,16 +2870,64 @@ class FirestoreConnectedRepository implements IRepository {
             if (snapshot.metadata.hasPendingWrites) return;
             recordSnapshotReceived(snapshot.metadata.fromCache);
             const list: EvaluationRecord[] = [];
+            const purgedPointsByStudent = new Map<string, number>();
             if (!snapshot.empty) {
               snapshot.forEach((d) => {
                 const rec = d.data() as EvaluationRecord;
-                if (rec && rec.id && !deletedDocIds.has(rec.id)) {
-                  list.push(rec);
+                if (!rec || !rec.id || deletedDocIds.has(rec.id)) return;
+                if (isEvaluationBeforeStart(rec)) {
+                  const key = `evaluations:${rec.id}`;
+                  if (!this.purgedPreStartDocKeys.has(key)) {
+                    this.purgedPreStartDocKeys.add(key);
+                    deletedDocIds.add(rec.id);
+                    void deleteFromFirestore('evaluations', rec.id);
+                    const isoDate = extractRecordISODate(rec.date, [rec.id, rec.timestamp]);
+                    if (rec.studentId && isoDate) {
+                      const detTxId = `tx_eval_${rec.studentId}_${isoDate}`;
+                      const txKey = `transactions:${detTxId}`;
+                      if (!this.purgedPreStartDocKeys.has(txKey)) {
+                        this.purgedPreStartDocKeys.add(txKey);
+                        deletedDocIds.add(detTxId);
+                        void deleteFromFirestore('transactions', detTxId);
+                      }
+                      const pts =
+                        typeof rec.totalPoints === 'number'
+                          ? rec.totalPoints
+                          : rec.pointsAwarded || 0;
+                      if (pts > 0) {
+                        purgedPointsByStudent.set(
+                          rec.studentId,
+                          (purgedPointsByStudent.get(rec.studentId) || 0) + pts
+                        );
+                      }
+                    }
+                  }
+                  return;
                 }
+                list.push(rec);
               });
             }
             saveItem(STORAGE_KEYS.EVALUATIONS, list);
             this.reconcileStudentAttendance();
+            if (purgedPointsByStudent.size > 0) {
+              const students = loadItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+              let studentsChanged = false;
+              students.forEach((s) => {
+                const deduct = purgedPointsByStudent.get(s.id);
+                if (!deduct) return;
+                const nextPts = Math.max(0, (s.currentPoints || 0) - deduct);
+                const stats = this.getStudentAttendanceStats(s.id);
+                s.currentPoints = nextPts;
+                s.attendanceRate = stats.attendanceRate;
+                s.streakDays = stats.streakDays;
+                s.consecutiveAbsences = stats.consecutiveAbsences;
+                studentsChanged = true;
+                void syncToFirestore('students', s);
+              });
+              if (studentsChanged) {
+                saveItem(STORAGE_KEYS.STUDENTS, students);
+              }
+            }
             debouncedNotifySubscribers();
           },
           handleSnapshotError('evaluations')
@@ -2392,6 +2941,15 @@ class FirestoreConnectedRepository implements IRepository {
             query(collection(db, 'support_tickets'), where('senderId', 'in', senderIds))
           );
         }
+
+        // 4. Support messages addressed to this teacher / all teachers / all users
+        const teacherMsgKeys = buildMessageTargetKeys(user);
+        subscribeSupportMessages(
+          query(collection(db, 'support_messages'), where('targetKeys', 'array-contains-any', teacherMsgKeys))
+        );
+        subscribeSupportMessageReads(
+          query(collection(db, 'support_message_reads'), where('userId', '==', getCanonicalMessageUserId(user)))
+        );
         return;
       }
 
@@ -2433,9 +2991,17 @@ class FirestoreConnectedRepository implements IRepository {
             if (!snapshot.empty) {
               snapshot.forEach((d) => {
                 const rec = d.data() as EvaluationRecord;
-                if (rec && rec.id && !deletedDocIds.has(rec.id)) {
-                  list.push(rec);
+                if (!rec || !rec.id || deletedDocIds.has(rec.id)) return;
+                if (isEvaluationBeforeStart(rec)) {
+                  const key = `evaluations:${rec.id}`;
+                  if (!this.purgedPreStartDocKeys.has(key)) {
+                    this.purgedPreStartDocKeys.add(key);
+                    deletedDocIds.add(rec.id);
+                    void deleteFromFirestore('evaluations', rec.id);
+                  }
+                  return;
                 }
+                list.push(rec);
               });
             }
             saveItem(STORAGE_KEYS.EVALUATIONS, list);
@@ -2458,9 +3024,17 @@ class FirestoreConnectedRepository implements IRepository {
             if (!snapshot.empty) {
               snapshot.forEach((d) => {
                 const tx = d.data() as PointTransaction;
-                if (tx && tx.id && !deletedDocIds.has(tx.id)) {
-                  list.push(tx);
+                if (!tx || !tx.id || deletedDocIds.has(tx.id)) return;
+                if (isTransactionBeforeStart(tx)) {
+                  const key = `transactions:${tx.id}`;
+                  if (!this.purgedPreStartDocKeys.has(key)) {
+                    this.purgedPreStartDocKeys.add(key);
+                    deletedDocIds.add(tx.id);
+                    void deleteFromFirestore('transactions', tx.id);
+                  }
+                  return;
                 }
+                list.push(tx);
               });
             }
             saveItem(STORAGE_KEYS.TRANSACTIONS, list);
@@ -2516,6 +3090,15 @@ class FirestoreConnectedRepository implements IRepository {
         subscribeSupportTickets(
           query(collection(db, 'support_tickets'), where('senderRole', '==', 'supervisor'))
         );
+
+        // 7. Support messages addressed to supervisor / all users
+        const supervisorMsgKeys = buildMessageTargetKeys(user);
+        subscribeSupportMessages(
+          query(collection(db, 'support_messages'), where('targetKeys', 'array-contains-any', supervisorMsgKeys))
+        );
+        subscribeSupportMessageReads(
+          query(collection(db, 'support_message_reads'), where('userId', '==', getCanonicalMessageUserId(user)))
+        );
         return;
       }
 
@@ -2554,9 +3137,17 @@ class FirestoreConnectedRepository implements IRepository {
           if (!snapshot.empty) {
             snapshot.forEach((d) => {
               const tx = d.data() as PointTransaction;
-              if (tx && tx.id && !deletedDocIds.has(tx.id)) {
-                list.push(tx);
+              if (!tx || !tx.id || deletedDocIds.has(tx.id)) return;
+              if (isTransactionBeforeStart(tx)) {
+                const key = `transactions:${tx.id}`;
+                if (!this.purgedPreStartDocKeys.has(key)) {
+                  this.purgedPreStartDocKeys.add(key);
+                  deletedDocIds.add(tx.id);
+                  void deleteFromFirestore('transactions', tx.id);
+                }
+                return;
               }
+              list.push(tx);
             });
           }
           saveItem(STORAGE_KEYS.TRANSACTIONS, list);
@@ -2568,6 +3159,8 @@ class FirestoreConnectedRepository implements IRepository {
       this.unsubscribers.push(unsubTx);
 
       subscribeSupportTickets(collection(db, 'support_tickets'));
+      subscribeSupportMessages(collection(db, 'support_messages'));
+      subscribeSupportMessageReads(collection(db, 'support_message_reads'));
     } catch (e) {
       console.warn('Firestore real-time listeners initialization skipped:', e);
     }
@@ -2666,6 +3259,15 @@ class FirestoreConnectedRepository implements IRepository {
     const existingIndex = students.findIndex((s) => s.id === student.id);
     const isNew = existingIndex === -1;
 
+    // Clear deleted tombstone if a previously deleted student ID is intentionally added again
+    deletedDocIds.delete(student.id);
+    const deletedIds = getPersistedDeletedStudentIds();
+    if (deletedIds.has(student.id)) {
+      deletedIds.delete(student.id);
+      savePersistedDeletedStudentIds(deletedIds);
+      void syncDeletedStudentsTombstonesToFirestore(deletedIds);
+    }
+
     if (isNew) {
       students.push(student);
     } else {
@@ -2674,6 +3276,28 @@ class FirestoreConnectedRepository implements IRepository {
 
     saveItem(STORAGE_KEYS.STUDENTS, students);
     syncToFirestore('students', student);
+
+    // Sync users/{uid} document so UID-linked students can log in immediately without code deploys
+    if (
+      !student.id.startsWith('student_') &&
+      /^[a-zA-Z0-9_-]{1,128}$/.test(student.id) &&
+      (actor.role === 'admin' || actor.role === 'supervisor')
+    ) {
+      const cleanEmail = (student.email || '').trim().slice(0, 200);
+      const userDocPayload = sanitizeForFirestore({
+        id: student.id,
+        uid: student.id,
+        name: student.name.slice(0, 200),
+        ...(cleanEmail ? { email: cleanEmail } : {}),
+        role: 'student' as const,
+        studentId: student.id,
+        circleId: student.circleId,
+        createdAt: new Date().toISOString(),
+      });
+      void setDoc(doc(db, 'users', student.id), userDocPayload, { merge: true }).catch((err: any) => {
+        console.warn('Firestore student user doc sync notice:', err?.message || err);
+      });
+    }
 
     // Update Circle student count
     this.recalculateCircleStudentCounts();
@@ -2684,13 +3308,13 @@ class FirestoreConnectedRepository implements IRepository {
       actorName: actor.name,
       actorRole: actor.role,
       action: isNew ? 'إضافة طالب جديد' : 'تحديث بيانات طالب',
-      details: `${isNew ? 'تمت إضافة' : 'تم تعديل'} الطالب ${student.name} في ${this.getCircleById(student.circleId)?.name || 'الحلقة'}`,
+      details: `${isNew ? 'تمت إضافة' : 'تم تعديل'} الطالب ${student.name} في ${this.getCircleById(student.circleId)?.name || 'الحلقة'}${!student.id.startsWith('student_') ? ` (UID: ${student.id})` : ''}`,
       targetType: 'student',
       targetId: student.id,
     });
 
     notifySubscribers();
-    return { success: true, message: isNew ? 'تمت إضافة الطالب بنجاح' : 'تم تحديث بيانات الطالب' };
+    return { success: true, message: isNew ? 'تمت إضافة الطالب وربط حسابه بنجاح' : 'تم تحديث بيانات الطالب' };
   }
 
   deleteStudent(id: string, actor: { id: string; name: string; role: Role }): { success: boolean; message: string } {
@@ -2940,7 +3564,9 @@ class FirestoreConnectedRepository implements IRepository {
 
   // Transactions & Points
   getTransactions(filter?: { studentId?: string }): PointTransaction[] {
-    const all = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
+    const all = loadItem<PointTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS).filter(
+      (t) => !isTransactionBeforeStart(t)
+    );
     if (filter?.studentId) {
       return all.filter((t) => t.studentId === filter.studentId);
     }
@@ -3163,15 +3789,21 @@ class FirestoreConnectedRepository implements IRepository {
   }
 
   getAttendanceHistory(circleId?: string, date?: string): AttendanceRecord[] {
-    let records = loadItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    let records = loadItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []).filter(
+      (r) => !isAttendanceBeforeStart(r)
+    );
     if (circleId) records = records.filter((r) => r.circleId === circleId);
     if (date) records = records.filter((r) => r.date === date);
     return records;
   }
 
   getStudentAttendanceStats(studentId: string, period?: 'week' | 'month' | 'all'): StudentAttendanceStats {
-    const evals = loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, INITIAL_EVALUATIONS);
-    const attendance = loadItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+    const evals = loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, INITIAL_EVALUATIONS).filter(
+      (e) => !isEvaluationBeforeStart(e)
+    );
+    const attendance = loadItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []).filter(
+      (a) => !isAttendanceBeforeStart(a)
+    );
 
     let studentEvals = evals.filter((e) => e.studentId === studentId);
     let studentAttendance = attendance.filter((r) => r.studentId === studentId);
@@ -3189,10 +3821,9 @@ class FirestoreConnectedRepository implements IRepository {
         const d = new Date(now.getFullYear(), now.getMonth(), 1);
         minDate = d.toISOString().split('T')[0];
       }
-      if (minDate) {
-        studentEvals = studentEvals.filter((e) => e.date >= minDate);
-        studentAttendance = studentAttendance.filter((a) => a.date >= minDate);
-      }
+      const effectiveMin = minDate && minDate > RECORDING_START_DATE ? minDate : RECORDING_START_DATE;
+      studentEvals = studentEvals.filter((e) => e.date >= effectiveMin);
+      studentAttendance = studentAttendance.filter((a) => a.date >= effectiveMin);
     }
 
     // Map each distinct date to status
@@ -3330,6 +3961,13 @@ class FirestoreConnectedRepository implements IRepository {
     notes?: string;
     teacherName: string;
   }): { success: boolean; message: string; totalPoints: number } {
+    if (isBeforeRecordingStart(params.date)) {
+      return {
+        success: false,
+        message: 'الأيام السابقة مغلقة؛ يبدأ الرصد المعتمد من يوم الأحد 15 نوفمبر',
+        totalPoints: 0,
+      };
+    }
     const students = this.getStudents();
     const student = students.find((s) => s.id === params.studentId);
     if (!student) return { success: false, message: 'الطالب غير موجود', totalPoints: 0 };
@@ -3421,7 +4059,9 @@ class FirestoreConnectedRepository implements IRepository {
   }
 
   getEvaluationsList(): EvaluationRecord[] {
-    return loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, INITIAL_EVALUATIONS);
+    return loadItem<EvaluationRecord[]>(STORAGE_KEYS.EVALUATIONS, INITIAL_EVALUATIONS).filter(
+      (e) => !isEvaluationBeforeStart(e)
+    );
   }
 
   getEvaluationsHistory(studentId?: string): EvaluationRecord[] {
@@ -3471,6 +4111,19 @@ class FirestoreConnectedRepository implements IRepository {
       return {
         success: false,
         message: 'الرصد متاح فقط لأيام الحلقات المقررة من الأحد إلى الأربعاء',
+        record: {} as EvaluationRecord,
+        deltaPoints: 0,
+      };
+    }
+
+    if (!isDateOpenForRecording(params.date)) {
+      const lockReason = getRecordingDateLockReason(params.date);
+      return {
+        success: false,
+        message:
+          lockReason === 'before_start'
+            ? 'الأيام السابقة مغلقة؛ يبدأ الرصد المعتمد من يوم الأحد 15 نوفمبر'
+            : 'الأيام القادمة مغلقة حالياً وسيُفتح الرصد عند حلول موعدها',
         record: {} as EvaluationRecord,
         deltaPoints: 0,
       };
@@ -4616,6 +5269,318 @@ class FirestoreConnectedRepository implements IRepository {
     return this.closeSupportTicket(ticketId);
   }
 
+  // Support Outbound Messages (رسائل الدعم الفني للمستخدمين)
+  private getCanonicalUserIdForSupportMessages(user: User): string {
+    if (user.role === 'student') {
+      return user.studentId || user.id.replace(/^user_/, '');
+    }
+    return user.id;
+  }
+
+  getSupportMessages(): SupportMessage[] {
+    const list = loadItem<SupportMessage[]>(STORAGE_KEYS.SUPPORT_MESSAGES, []);
+    return list
+      .filter((m) => m && m.id && !deletedDocIds.has(m.id))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  getSupportMessageReads(messageId?: string): SupportMessageRead[] {
+    const list = loadItem<SupportMessageRead[]>(STORAGE_KEYS.SUPPORT_MESSAGE_READS, []);
+    return list
+      .filter((r) => r && r.id && !deletedDocIds.has(r.id) && (!messageId || r.messageId === messageId))
+      .sort((a, b) => new Date(b.readAt).getTime() - new Date(a.readAt).getTime());
+  }
+
+  isSupportMessageReadByUser(messageId: string, user: User): boolean {
+    if (user.role === 'admin') return true;
+    const canonicalId = this.getCanonicalUserIdForSupportMessages(user);
+    const reads = this.getSupportMessageReads(messageId);
+    return reads.some((r) => r.userId === canonicalId || r.userId === user.id);
+  }
+
+  getSupportMessagesForUser(user: User): SupportMessage[] {
+    if (user.role === 'admin') {
+      return this.getSupportMessages();
+    }
+    const all = this.getSupportMessages();
+    const canonicalId = this.getCanonicalUserIdForSupportMessages(user);
+    const matchingKeys = new Set<string>(['all', `role:${user.role}`]);
+    if (canonicalId) matchingKeys.add(`user:${canonicalId}`);
+    if (user.id) matchingKeys.add(`user:${user.id}`);
+
+    const readSet = new Set<string>();
+    this.getSupportMessageReads().forEach((r) => {
+      if (r.userId === canonicalId || r.userId === user.id) {
+        readSet.add(r.messageId);
+      }
+    });
+
+    return all
+      .filter((m) => Array.isArray(m.targetKeys) && m.targetKeys.some((k) => matchingKeys.has(k)))
+      .sort((a, b) => {
+        const aUnread = !readSet.has(a.id);
+        const bUnread = !readSet.has(b.id);
+        if (aUnread !== bUnread) {
+          return bUnread ? 1 : -1;
+        }
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+  }
+
+  sendSupportMessage(params: {
+    title?: string;
+    body: string;
+    audienceType: SupportMessageAudience;
+    targetUserIds?: string[];
+    recipientNames?: string[];
+    recipientCount: number;
+    senderId: string;
+    senderName: string;
+  }): { success: boolean; message: string; supportMessage?: SupportMessage } {
+    const cleanBody = params.body.trim().slice(0, 3000);
+    if (!cleanBody) {
+      return { success: false, message: 'الرجاء كتابة نص الرسالة أولاً' };
+    }
+
+    const cleanTitle = (params.title || '').trim().slice(0, 200);
+
+    let targetKeys: string[] = [];
+    if (params.audienceType === 'all') {
+      targetKeys = ['all'];
+    } else if (params.audienceType === 'teachers') {
+      targetKeys = ['role:teacher'];
+    } else if (params.audienceType === 'students') {
+      targetKeys = ['role:student'];
+    } else if (params.audienceType === 'supervisors') {
+      targetKeys = ['role:supervisor'];
+    } else {
+      const uniqueIds = Array.from(
+        new Set(
+          (params.targetUserIds || [])
+            .map((id) => id.trim().replace(/^user_/, ''))
+            .filter(Boolean)
+        )
+      ).slice(0, 300);
+
+      if (uniqueIds.length === 0) {
+        return { success: false, message: 'الرجاء اختيار مستلم واحد على الأقل' };
+      }
+      targetKeys = uniqueIds.map((id) => `user:${id}`);
+    }
+
+    const cleanRecipientNames = Array.isArray(params.recipientNames)
+      ? params.recipientNames
+          .map((n) => n.trim().slice(0, 120))
+          .filter(Boolean)
+          .slice(0, 300)
+      : undefined;
+
+    const newMsg: SupportMessage = {
+      id: `smsg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      ...(cleanTitle ? { title: cleanTitle } : {}),
+      body: cleanBody,
+      audienceType: params.audienceType,
+      targetKeys,
+      ...(cleanRecipientNames && cleanRecipientNames.length > 0
+        ? { recipientNames: cleanRecipientNames }
+        : {}),
+      recipientCount: Math.max(0, Math.min(10000, params.recipientCount)),
+      senderId: (params.senderId || 'admin').slice(0, 128),
+      senderName: (params.senderName || 'الدعم الفني').slice(0, 200),
+      createdAt: new Date().toISOString(),
+    };
+
+    const list = this.getSupportMessages();
+    list.unshift(newMsg);
+    saveItem(STORAGE_KEYS.SUPPORT_MESSAGES, list);
+    syncToFirestore('support_messages', newMsg);
+
+    const audienceArabic: Record<SupportMessageAudience, string> = {
+      all: 'جميع المستخدمين',
+      teachers: 'جميع المعلمين',
+      students: 'جميع الطلاب',
+      supervisors: 'مدير المجمع',
+      custom: `مستلمون محددون (${newMsg.recipientCount})`,
+    };
+
+    this.addAuditLog({
+      actorId: newMsg.senderId,
+      actorName: newMsg.senderName,
+      actorRole: 'admin',
+      action: 'إرسال رسالة من الدعم الفني',
+      details: `إلى ${audienceArabic[params.audienceType]}: ${(cleanTitle || cleanBody).slice(0, 70)}`,
+      targetType: 'settings',
+      targetId: newMsg.id,
+    });
+
+    notifySubscribers();
+    return {
+      success: true,
+      message: 'تم إرسال الرسالة إلى صندوق الوارد بنجاح',
+      supportMessage: newMsg,
+    };
+  }
+
+  markSupportMessageAsRead(messageId: string, user: User): { success: boolean } {
+    if (!messageId || user.role === 'admin') return { success: true };
+    if (this.isSupportMessageReadByUser(messageId, user)) {
+      return { success: true };
+    }
+
+    const canonicalId = this.getCanonicalUserIdForSupportMessages(user);
+    const readId = `${messageId}__${canonicalId}`.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 128);
+
+    const receipt: SupportMessageRead = {
+      id: readId,
+      messageId,
+      userId: canonicalId.slice(0, 128),
+      userName: (user.name || 'مستخدم').slice(0, 200),
+      userRole: user.role,
+      readAt: new Date().toISOString(),
+    };
+
+    const list = this.getSupportMessageReads();
+    const existingIdx = list.findIndex((r) => r.id === readId);
+    if (existingIdx >= 0) {
+      list[existingIdx] = receipt;
+    } else {
+      list.unshift(receipt);
+    }
+    saveItem(STORAGE_KEYS.SUPPORT_MESSAGE_READS, list);
+    syncToFirestore('support_message_reads', receipt);
+    notifySubscribers();
+    return { success: true };
+  }
+
+  async deleteSupportMessage(messageId: string): Promise<{ success: boolean; message: string }> {
+    if (!messageId) {
+      return { success: false, message: 'معرّف الرسالة غير صالح' };
+    }
+
+    const msgPath = `support_messages/${messageId}`;
+    deletedDocIds.add(messageId);
+    syncedHashes.delete(`support_messages_${messageId}`);
+
+    // Remove message locally
+    const list = this.getSupportMessages().filter((m) => m.id !== messageId);
+    saveItem(STORAGE_KEYS.SUPPORT_MESSAGES, list);
+
+    // Remove linked local read receipts
+    const reads = this.getSupportMessageReads();
+    const removedReadIds = new Set<string>();
+    const remainingReads = reads.filter((r) => {
+      if (r.messageId === messageId) {
+        removedReadIds.add(r.id);
+        deletedDocIds.add(r.id);
+        syncedHashes.delete(`support_message_reads_${r.id}`);
+        return false;
+      }
+      return true;
+    });
+    if (removedReadIds.size > 0) {
+      saveItem(STORAGE_KEYS.SUPPORT_MESSAGE_READS, remainingReads);
+    }
+
+    // Remove linked local audit logs
+    const logs = this.getAuditLogs();
+    const removedLogIds = new Set<string>();
+    const remainingLogs = logs.filter((l) => {
+      if (l.targetId === messageId) {
+        removedLogIds.add(l.id);
+        deletedDocIds.add(l.id);
+        syncedHashes.delete(`audit_logs_${l.id}`);
+        return false;
+      }
+      return true;
+    });
+    if (removedLogIds.size > 0) {
+      saveItem(STORAGE_KEYS.AUDIT_LOGS, remainingLogs);
+    }
+
+    notifySubscribers();
+
+    updateSyncState({
+      status: 'syncing',
+      pendingWritesCount: currentSyncStatus.pendingWritesCount + 1,
+    });
+
+    try {
+      await deleteDoc(doc(db, 'support_messages', messageId));
+
+      try {
+        const readsSnap = await getDocs(
+          query(collection(db, 'support_message_reads'), where('messageId', '==', messageId))
+        );
+        const readDeletes: Promise<void>[] = [];
+        readsSnap.forEach((d) => {
+          deletedDocIds.add(d.id);
+          syncedHashes.delete(`support_message_reads_${d.id}`);
+          readDeletes.push(deleteDoc(d.ref));
+        });
+        removedReadIds.forEach((rId) => {
+          if (!readsSnap.docs.some((d) => d.id === rId)) {
+            readDeletes.push(deleteDoc(doc(db, 'support_message_reads', rId)));
+          }
+        });
+        if (readDeletes.length > 0) {
+          await Promise.all(readDeletes);
+        }
+      } catch (readErr: any) {
+        console.warn('Linked support message reads cleanup notice:', readErr?.message || readErr);
+      }
+
+      try {
+        const auditSnap = await getDocs(
+          query(collection(db, 'audit_logs'), where('targetId', '==', messageId))
+        );
+        const logDeletes: Promise<void>[] = [];
+        auditSnap.forEach((d) => {
+          deletedDocIds.add(d.id);
+          syncedHashes.delete(`audit_logs_${d.id}`);
+          logDeletes.push(deleteDoc(d.ref));
+        });
+        removedLogIds.forEach((lId) => {
+          if (!auditSnap.docs.some((d) => d.id === lId)) {
+            logDeletes.push(deleteDoc(doc(db, 'audit_logs', lId)));
+          }
+        });
+        if (logDeletes.length > 0) {
+          await Promise.all(logDeletes);
+        }
+      } catch (auditErr: any) {
+        console.warn('Linked audit log cleanup notice:', auditErr?.message || auditErr);
+      }
+
+      updateSyncState({
+        status: 'connected',
+        lastUpdated: new Date(),
+        pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+        errorMessage: undefined,
+      });
+
+      notifySubscribers();
+      return {
+        success: true,
+        message: 'تم حذف الرسالة وإزالتها من صناديق الوارد بنجاح',
+      };
+    } catch (err: any) {
+      updateSyncState({
+        status: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error',
+        errorMessage: err?.message,
+        pendingWritesCount: Math.max(0, currentSyncStatus.pendingWritesCount - 1),
+      });
+
+      if (err?.code === 'permission-denied') {
+        handleFirestoreError(err, OperationType.DELETE, msgPath);
+      }
+
+      return {
+        success: false,
+        message: 'تعذر حذف الرسالة من الخادم، تحقق من الاتصال وحاول مجدداً',
+      };
+    }
+  }
+
   resetToDefaults(): void {
     localStorage.removeItem(STORAGE_KEYS.STUDENTS);
     localStorage.removeItem(STORAGE_KEYS.CIRCLES);
@@ -4629,6 +5594,8 @@ class FirestoreConnectedRepository implements IRepository {
     localStorage.removeItem(STORAGE_KEYS.AUDIT_LOGS);
     localStorage.removeItem(STORAGE_KEYS.ACHIEVEMENTS);
     localStorage.removeItem(STORAGE_KEYS.SUPPORT_TICKETS);
+    localStorage.removeItem(STORAGE_KEYS.SUPPORT_MESSAGES);
+    localStorage.removeItem(STORAGE_KEYS.SUPPORT_MESSAGE_READS);
     notifySubscribers();
   }
 }

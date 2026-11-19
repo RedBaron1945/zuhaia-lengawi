@@ -34,7 +34,8 @@
         "phone": { "type": "string", "maxLength": 40 },
         "parentPhone": { "type": "string", "maxLength": 40 },
         "fullNameQuad": { "type": "string", "maxLength": 240 },
-        "nationalId": { "type": "string", "maxLength": 40 },
+        "idType": { "type": "string", "enum": ["national_id", "visit_visa", "passport"] },
+        "nationalId": { "type": "string", "maxLength": 120 },
         "nationality": { "type": "string", "maxLength": 80 },
         "birthDate": { "type": "string", "maxLength": 40 },
         "birthPlace": { "type": "string", "maxLength": 120 },
@@ -275,6 +276,38 @@
         "userLastReadAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "ticketType", "priority", "message", "senderName", "senderId", "createdAt", "status"]
+    },
+    "SupportMessage": {
+      "title": "SupportMessage",
+      "description": "Broadcast or targeted message sent by tech support to users' inboxes.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 3000 },
+        "audienceType": { "type": "string", "enum": ["all", "teachers", "students", "supervisors", "custom"] },
+        "targetKeys": { "type": "array" },
+        "recipientNames": { "type": "array" },
+        "recipientCount": { "type": "number" },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "createdAt": { "type": "string", "minLength": 1, "maxLength": 64 }
+      },
+      "required": ["id", "body", "audienceType", "targetKeys", "recipientCount", "senderId", "senderName", "createdAt"]
+    },
+    "SupportMessageRead": {
+      "title": "SupportMessageRead",
+      "description": "Per-user read receipt for a tech support broadcast or direct message.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "messageId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "userRole": { "type": "string", "enum": ["student", "teacher", "supervisor", "admin"] },
+        "readAt": { "type": "string", "minLength": 1, "maxLength": 64 }
+      },
+      "required": ["id", "messageId", "userId", "userName", "userRole", "readAt"]
     }
   },
   "firestore": {
@@ -329,6 +362,14 @@
     "/support_tickets/{ticketId}": {
       "schema": { "$ref": "#/entities/SupportTicket" },
       "description": "Support tickets restricted strictly to ticket owner, supervisor (own tickets), and tech support admin."
+    },
+    "/support_messages/{messageId}": {
+      "schema": { "$ref": "#/entities/SupportMessage" },
+      "description": "Broadcast and direct inbox messages created by tech support and readable only by targeted recipients and admin."
+    },
+    "/support_message_reads/{readId}": {
+      "schema": { "$ref": "#/entities/SupportMessageRead" },
+      "description": "Per-user read receipts for support messages scoped to receipt owner and admin."
     }
   }
 }

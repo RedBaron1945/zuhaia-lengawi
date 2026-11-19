@@ -5,9 +5,10 @@ import {
   SupportTicketType,
   SupportTicketPriority,
   SupportTicketReply,
+  SupportMessage,
+  SupportMessageAudience,
 } from '../../types';
 import {
-  LifeBuoy,
   Search,
   ArchiveX,
   Flame,
@@ -20,6 +21,14 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
+  Megaphone,
+  Users,
+  BookOpen,
+  GraduationCap,
+  Shield,
+  UserCheck,
+  Eye,
+  Trash2,
 } from 'lucide-react';
 import {
   formatHijriDateTime,
@@ -29,6 +38,7 @@ import {
 import { ConfirmationModal } from '../common/ConfirmationModal';
 import { useToast } from '../../context/ToastContext';
 import { WhatsAppIcon } from '../common/WhatsAppIcon';
+import { SendSupportMessageModal } from './SendSupportMessageModal';
 
 interface TicketGroup {
   groupKey: string;
@@ -52,13 +62,43 @@ const getSenderGroupKey = (t: SupportTicket): string => {
   return `name:${(t.senderName || '').trim()}::role:${t.senderRole || 'guest'}`;
 };
 
+const AUDIENCE_META: Record<
+  SupportMessageAudience,
+  { label: string; badgeClass: string }
+> = {
+  all: {
+    label: 'الجميع',
+    badgeClass: 'bg-indigo-100 text-indigo-900 border-indigo-200',
+  },
+  teachers: {
+    label: 'المعلمون فقط',
+    badgeClass: 'bg-sky-50 text-sky-900 border-sky-200',
+  },
+  students: {
+    label: 'الطلاب فقط',
+    badgeClass: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+  },
+  supervisors: {
+    label: 'مدير المجمع',
+    badgeClass: 'bg-amber-50 text-amber-900 border-amber-200',
+  },
+  custom: {
+    label: 'أسماء محددة',
+    badgeClass: 'bg-purple-50 text-purple-900 border-purple-200',
+  },
+};
+
 export const SupportTicketsManager: React.FC = () => {
-  const [filterType, setFilterType] = useState<string>('all');
-  const [filterPriority, setFilterPriority] = useState<'all' | 'high' | 'other'>('all');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [activeSection, setActiveSection] = useState<'tickets' | 'sent_messages'>('tickets');
   const [search, setSearch] = useState('');
+  const [sentSearch, setSentSearch] = useState('');
+  const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [closeTarget, setCloseTarget] = useState<SupportTicket | null>(null);
   const [isClosing, setIsClosing] = useState(false);
+  const [deleteMsgTarget, setDeleteMsgTarget] = useState<SupportMessage | null>(null);
+  const [isDeletingMsg, setIsDeletingMsg] = useState(false);
+  const [expandedReadersMsgId, setExpandedReadersMsgId] = useState<string | null>(null);
+  const [expandedRecipientsMsgIds, setExpandedRecipientsMsgIds] = useState<Record<string, boolean>>({});
   const [replyOpenId, setReplyOpenId] = useState<string | null>(null);
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [copiedPhoneId, setCopiedPhoneId] = useState<string | null>(null);
@@ -74,29 +114,35 @@ export const SupportTicketsManager: React.FC = () => {
   }, []);
 
   const tickets = repository.getSupportTickets();
+  const sentMessages = repository.getSupportMessages();
+  const allMessageReads = repository.getSupportMessageReads();
 
-  // Statistics
-  const highPriorityCount = useMemo(
-    () => tickets.filter((t) => t.priority === 'high').length,
-    [tickets]
-  );
-  const otherPriorityCount = useMemo(
-    () => tickets.filter((t) => t.priority === 'medium' || t.priority === 'low').length,
-    [tickets]
-  );
-  const newTicketsCount = useMemo(
-    () => tickets.filter((t) => t.status === 'new').length,
-    [tickets]
-  );
+  const readsByMessageId = useMemo(() => {
+    const map = new Map<string, typeof allMessageReads>();
+    allMessageReads.forEach((r) => {
+      const arr = map.get(r.messageId);
+      if (arr) arr.push(r);
+      else map.set(r.messageId, [r]);
+    });
+    return map;
+  }, [allMessageReads]);
+
+  const filteredSentMessages = useMemo(() => {
+    const q = sentSearch.trim().toLowerCase();
+    if (!q) return sentMessages;
+    return sentMessages.filter((m) => {
+      const titleMatch = (m.title || '').toLowerCase().includes(q);
+      const bodyMatch = m.body.toLowerCase().includes(q);
+      const audienceMatch = AUDIENCE_META[m.audienceType]?.label.includes(q);
+      const recipientsMatch = (m.recipientNames || []).some((n) => n.toLowerCase().includes(q));
+      return titleMatch || bodyMatch || audienceMatch || recipientsMatch;
+    });
+  }, [sentMessages, sentSearch]);
 
   // Filtered and Sorted Tickets
   const filteredTickets = useMemo(() => {
     return tickets
       .filter((t) => {
-        if (filterType !== 'all' && t.ticketType !== filterType) return false;
-        if (filterPriority === 'high' && t.priority !== 'high') return false;
-        if (filterPriority === 'other' && t.priority === 'high') return false;
-        if (filterStatus !== 'all' && t.status !== filterStatus) return false;
         if (search.trim()) {
           const q = search.trim();
           if (
@@ -123,7 +169,7 @@ export const SupportTicketsManager: React.FC = () => {
         }
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
-  }, [tickets, filterType, filterPriority, filterStatus, search]);
+  }, [tickets, search]);
 
   // Group consecutive tickets from the same sender
   const groupedTickets = useMemo<TicketGroup[]>(() => {
@@ -177,6 +223,42 @@ export const SupportTicketsManager: React.FC = () => {
       showToast('تعذر إغلاق التذكرة من الخادم، يرجى المحاولة لاحقاً', 'error');
     } finally {
       setIsClosing(false);
+    }
+  };
+
+  const handleConfirmDeleteMessage = async () => {
+    if (!deleteMsgTarget || isDeletingMsg) return;
+    const targetId = deleteMsgTarget.id;
+    setIsDeletingMsg(true);
+    try {
+      const res = await repository.deleteSupportMessage(targetId);
+      if (res.success) {
+        setExpandedReadersMsgId((prev) => (prev === targetId ? null : prev));
+        setDeleteMsgTarget(null);
+        showToast(res.message, 'success');
+        setTick((t) => t + 1);
+      } else {
+        showToast(res.message, 'error');
+      }
+    } catch {
+      showToast('تعذر حذف الرسالة من الخادم، يرجى المحاولة لاحقاً', 'error');
+    } finally {
+      setIsDeletingMsg(false);
+    }
+  };
+
+  const renderAudienceIcon = (audienceType: SupportMessageAudience) => {
+    switch (audienceType) {
+      case 'all':
+        return <Users className="w-3.5 h-3.5" />;
+      case 'teachers':
+        return <BookOpen className="w-3.5 h-3.5" />;
+      case 'students':
+        return <GraduationCap className="w-3.5 h-3.5" />;
+      case 'supervisors':
+        return <Shield className="w-3.5 h-3.5" />;
+      case 'custom':
+        return <UserCheck className="w-3.5 h-3.5" />;
     }
   };
 
@@ -551,190 +633,341 @@ export const SupportTicketsManager: React.FC = () => {
 
   return (
     <div className="space-y-3">
-      {/* Clickable Summary Stat Filters (الكل · عالية · أخرى) */}
-      <div className="grid grid-cols-3 gap-2.5">
-        {/* الكل */}
-        <button
-          type="button"
-          onClick={() => setFilterPriority('all')}
-          className={`rounded-2xl p-3 border text-right flex items-center justify-between transition-all cursor-pointer ${
-            filterPriority === 'all'
-              ? 'bg-indigo-50/80 border-indigo-600 ring-2 ring-indigo-600/20'
-              : 'bg-white border-slate-200 hover:border-slate-300'
-          }`}
+      {/* Section Switcher & Send Message CTA */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+        <div
+          role="tablist"
+          aria-label="أقسام الدعم الفني"
+          className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1 text-xs font-bold shadow-2xs"
         >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-indigo-900 text-white flex items-center justify-center shrink-0">
-              <LifeBuoy className="w-5 h-5 text-indigo-200" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-extrabold text-slate-900">الكل</p>
-              <p className="text-[10px] text-slate-500 truncate">
-                {newTicketsCount > 0 ? `${newTicketsCount} جديدة` : 'جميع التذاكر'}
-              </p>
-            </div>
-          </div>
-          <span className="text-xl font-black text-indigo-950 tabular-nums font-mono">
-            {tickets.length}
-          </span>
-        </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'tickets'}
+            onClick={() => setActiveSection('tickets')}
+            className={`flex-1 sm:flex-none px-3.5 py-2 rounded-lg transition-colors cursor-pointer inline-flex items-center justify-center gap-1.5 tabular-nums ${
+              activeSection === 'tickets'
+                ? 'bg-indigo-900 text-white shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>التذاكر الواردة ({tickets.length})</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'sent_messages'}
+            onClick={() => setActiveSection('sent_messages')}
+            className={`flex-1 sm:flex-none px-3.5 py-2 rounded-lg transition-colors cursor-pointer inline-flex items-center justify-center gap-1.5 tabular-nums ${
+              activeSection === 'sent_messages'
+                ? 'bg-indigo-900 text-white shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Megaphone className="w-3.5 h-3.5" />
+            <span>الرسائل المرسلة ({sentMessages.length})</span>
+          </button>
+        </div>
 
-        {/* عالية */}
         <button
           type="button"
-          onClick={() => setFilterPriority((prev) => (prev === 'high' ? 'all' : 'high'))}
-          className={`rounded-2xl p-3 border text-right flex items-center justify-between transition-all cursor-pointer ${
-            filterPriority === 'high'
-              ? 'bg-rose-50/80 border-rose-600 ring-2 ring-rose-600/20'
-              : 'bg-white border-slate-200 hover:border-slate-300'
-          }`}
+          onClick={() => setIsComposeOpen(true)}
+          className="min-h-[42px] px-4 py-2 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer shrink-0"
         >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0">
-              <Flame className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-extrabold text-slate-900">عالية</p>
-              <p className="text-[10px] text-slate-500 truncate">مدير أو معلم</p>
-            </div>
-          </div>
-          <span className="text-xl font-black text-rose-700 tabular-nums font-mono">
-            {highPriorityCount}
-          </span>
-        </button>
-
-        {/* أخرى */}
-        <button
-          type="button"
-          onClick={() => setFilterPriority((prev) => (prev === 'other' ? 'all' : 'other'))}
-          className={`rounded-2xl p-3 border text-right flex items-center justify-between transition-all cursor-pointer ${
-            filterPriority === 'other'
-              ? 'bg-amber-50/80 border-amber-500 ring-2 ring-amber-500/20'
-              : 'bg-white border-slate-200 hover:border-slate-300'
-          }`}
-        >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
-              <Zap className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-extrabold text-slate-900">أخرى</p>
-              <p className="text-[10px] text-slate-500 truncate">متوسطة ومنخفضة</p>
-            </div>
-          </div>
-          <span className="text-xl font-black text-amber-700 tabular-nums font-mono">
-            {otherPriorityCount}
-          </span>
+          <Send className="w-3.5 h-3.5" />
+          <span>إرسال رسالة للمستخدمين</span>
         </button>
       </div>
 
-      {/* Search & Type/Status Filters (No Priority Dropdown) */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 flex-wrap">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="بحث في تذاكر الدعم بالاسم أو الرسالة أو الجوال..."
-            className="w-full pr-9 pl-3 py-2 text-xs rounded-xl bg-white border border-slate-200 focus:outline-hidden focus:border-indigo-600 min-h-[40px]"
-          />
-        </div>
+      {activeSection === 'tickets' ? (
+        <>
+          {/* Search Bar */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="بحث في تذاكر الدعم بالاسم أو الرسالة أو الجوال..."
+                className="w-full pr-9 pl-3 py-2 text-xs rounded-xl bg-white border border-slate-200 focus:outline-hidden focus:border-indigo-600 min-h-[40px]"
+              />
+            </div>
+          </div>
 
-        {/* Type Filter */}
-        <select
-          value={filterType}
-          onChange={(e) => setFilterType(e.target.value)}
-          aria-label="تصفية حسب نوع التذكرة"
-          className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
-        >
-          <option value="all">كل الأنواع</option>
-          <option value="مشكلة">مشاكل فقط</option>
-          <option value="اقتراح">مقترحات فقط</option>
-          <option value="استفسار">استفسارات فقط</option>
-          <option value="أخرى..">أخرى..</option>
-        </select>
+          {/* Tickets List (Grouped by consecutive same-sender) */}
+          {groupedTickets.length === 0 ? (
+            <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-500 text-xs">
+              لا توجد تذاكر دعم فني تطابق التصفية المحددة.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {groupedTickets.map((group) => {
+                if (group.tickets.length === 1) {
+                  return renderTicketCard(group.tickets[0]);
+                }
 
-        {/* Status Filter */}
-        <select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value)}
-          aria-label="تصفية حسب حالة التذكرة"
-          className="px-3 py-2 text-xs rounded-xl bg-white border border-slate-200 text-slate-700 min-h-[40px] cursor-pointer"
-        >
-          <option value="all">كل الحالات</option>
-          <option value="new">جديدة</option>
-          <option value="in_progress">قيد المعالجة</option>
-          <option value="resolved">تمت</option>
-        </select>
-      </div>
+                const isExpanded = Boolean(expandedGroups[group.groupKey]);
+                const extraCount = group.tickets.length - 1;
 
-      {/* Tickets List (Grouped by consecutive same-sender) */}
-      {groupedTickets.length === 0 ? (
-        <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-500 text-xs">
-          لا توجد تذاكر دعم فني تطابق التصفية المحددة.
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {groupedTickets.map((group) => {
-            if (group.tickets.length === 1) {
-              return renderTicketCard(group.tickets[0]);
-            }
+                return (
+                  <div
+                    key={group.groupKey}
+                    className="rounded-2xl border border-slate-200 bg-slate-50/70 p-2 space-y-2"
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedGroups((prev) => ({
+                          ...prev,
+                          [group.groupKey]: !prev[group.groupKey],
+                        }))
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 flex items-center justify-between gap-2 text-xs transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-extrabold text-slate-900 truncate">
+                          {group.senderName}
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-semibold shrink-0">
+                          · {ROLE_LABELS[group.senderRole || 'guest'] || 'مستخدم'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-indigo-800 font-extrabold shrink-0 tabular-nums">
+                        <span>
+                          {isExpanded
+                            ? `إخفاء (${group.tickets.length} تذاكر)`
+                            : `${group.tickets.length} تذاكر متتالية (+${extraCount})`}
+                        </span>
+                        {isExpanded ? (
+                          <ChevronUp className="w-4 h-4" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4" />
+                        )}
+                      </div>
+                    </button>
 
-            const isExpanded = Boolean(expandedGroups[group.groupKey]);
-            const extraCount = group.tickets.length - 1;
+                    {/* Always show the top/first ticket in the consecutive run */}
+                    {renderTicketCard(group.tickets[0])}
 
-            return (
-              <div
-                key={group.groupKey}
-                className="rounded-2xl border border-slate-200 bg-slate-50/70 p-2 space-y-2"
-              >
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpandedGroups((prev) => ({
-                      ...prev,
-                      [group.groupKey]: !prev[group.groupKey],
-                    }))
-                  }
-                  className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 flex items-center justify-between gap-2 text-xs transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-extrabold text-slate-900 truncate">
-                      {group.senderName}
-                    </span>
-                    <span className="text-[11px] text-slate-500 font-semibold shrink-0">
-                      · {ROLE_LABELS[group.senderRole || 'guest'] || 'مستخدم'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-indigo-800 font-extrabold shrink-0 tabular-nums">
-                    <span>
-                      {isExpanded
-                        ? `إخفاء (${group.tickets.length} تذاكر)`
-                        : `${group.tickets.length} تذاكر متتالية (+${extraCount})`}
-                    </span>
-                    {isExpanded ? (
-                      <ChevronUp className="w-4 h-4" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4" />
+                    {/* Show remaining consecutive tickets when expanded */}
+                    {isExpanded && (
+                      <div className="space-y-2 pt-0.5">
+                        {group.tickets.slice(1).map((t) => renderTicketCard(t))}
+                      </div>
                     )}
                   </div>
-                </button>
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          {/* Sent Messages Search */}
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={sentSearch}
+              onChange={(e) => setSentSearch(e.target.value)}
+              placeholder="بحث في الرسائل المرسلة بالعنوان أو النص أو اسم المستلم..."
+              className="w-full pr-9 pl-3 py-2 text-xs rounded-xl bg-white border border-slate-200 focus:outline-hidden focus:border-indigo-600 min-h-[40px]"
+            />
+          </div>
 
-                {/* Always show the top/first ticket in the consecutive run */}
-                {renderTicketCard(group.tickets[0])}
-
-                {/* Show remaining consecutive tickets when expanded */}
-                {isExpanded && (
-                  <div className="space-y-2 pt-0.5">
-                    {group.tickets.slice(1).map((t) => renderTicketCard(t))}
-                  </div>
-                )}
+          {filteredSentMessages.length === 0 ? (
+            <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 space-y-3">
+              <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center mx-auto">
+                <Megaphone className="w-5 h-5" />
               </div>
-            );
-          })}
-        </div>
+              <div className="space-y-1">
+                <p className="text-sm font-extrabold text-slate-800">
+                  {sentMessages.length === 0
+                    ? 'لم يتم إرسال أي رسائل للمستخدمين بعد'
+                    : 'لا توجد رسائل مطابقة لبحثك'}
+                </p>
+                <p className="text-xs text-slate-500">
+                  يمكنك إرسال رسالة فورية تصل إلى صندوق الوارد للجميع أو للمعلمين فقط أو لأسماء محددة.
+                </p>
+              </div>
+              {sentMessages.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => setIsComposeOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 min-h-[40px] rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white text-xs font-extrabold transition-colors cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>إرسال أول رسالة</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredSentMessages.map((msg) => {
+                const audienceInfo = AUDIENCE_META[msg.audienceType] || AUDIENCE_META.all;
+                const reads = readsByMessageId.get(msg.id) || [];
+                const isReadersOpen = expandedReadersMsgId === msg.id;
+                const relativeTime = formatRelativeTimeArabic(msg.createdAt);
+                const customNames = msg.recipientNames || [];
+                const showAllNames = Boolean(expandedRecipientsMsgIds[msg.id]);
+                const displayedNames = showAllNames ? customNames : customNames.slice(0, 6);
+
+                return (
+                  <div
+                    key={msg.id}
+                    className="bg-white rounded-2xl p-4 border border-slate-200 hover:border-slate-300 transition-colors space-y-3 shadow-2xs"
+                  >
+                    {/* Header Strip */}
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-xs font-extrabold border ${audienceInfo.badgeClass}`}
+                        >
+                          {renderAudienceIcon(msg.audienceType)}
+                          <span>
+                            إلى: {audienceInfo.label}
+                            {msg.recipientCount > 0 ? ` (${msg.recipientCount})` : ''}
+                          </span>
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-semibold">
+                          · {msg.senderName}
+                        </span>
+                      </div>
+
+                      <span className="text-[11px] text-slate-500 tabular-nums shrink-0">
+                        {relativeTime ? `${relativeTime} · ` : ''}
+                        {formatHijriDateTime(msg.createdAt)}
+                      </span>
+                    </div>
+
+                    {/* Custom recipients list */}
+                    {msg.audienceType === 'custom' && customNames.length > 0 && (
+                      <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                        <span className="font-bold text-slate-500">المستلمون:</span>
+                        {displayedNames.map((name, i) => (
+                          <span
+                            key={`${msg.id}_rec_${i}`}
+                            className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-bold border border-slate-200/80"
+                          >
+                            {name}
+                          </span>
+                        ))}
+                        {customNames.length > 6 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedRecipientsMsgIds((prev) => ({
+                                ...prev,
+                                [msg.id]: !prev[msg.id],
+                              }))
+                            }
+                            className="text-indigo-800 hover:text-indigo-950 font-extrabold cursor-pointer px-1"
+                          >
+                            {showAllNames
+                              ? 'عرض أقل'
+                              : `+${customNames.length - 6} آخرين`}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Title & Message Body */}
+                    <div className="p-3 bg-slate-50/90 rounded-xl border border-slate-100 space-y-1">
+                      {msg.title && (
+                        <h4 className="text-xs sm:text-sm font-black text-slate-900">
+                          {msg.title}
+                        </h4>
+                      )}
+                      <p className="text-xs sm:text-sm text-slate-800 leading-relaxed font-medium whitespace-pre-line">
+                        {msg.body}
+                      </p>
+                    </div>
+
+                    {/* Footer: Read Receipts + Delete */}
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedReadersMsgId(isReadersOpen ? null : msg.id)
+                        }
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold transition-colors cursor-pointer tabular-nums"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>
+                          قرأها {reads.length}
+                          {msg.recipientCount > 0 ? ` من ${msg.recipientCount}` : ''}
+                        </span>
+                        {isReadersOpen ? (
+                          <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDeleteMsgTarget(msg)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded-xl text-xs font-extrabold border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-800 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>حذف الرسالة</span>
+                      </button>
+                    </div>
+
+                    {/* Expanded Readers Drawer */}
+                    {isReadersOpen && (
+                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
+                        <div className="text-[11px] font-extrabold text-slate-700">
+                          سجل القراءة ({reads.length})
+                        </div>
+                        {reads.length === 0 ? (
+                          <p className="text-xs text-slate-500">
+                            لم يقرأ أي مستلم هذه الرسالة حتى الآن.
+                          </p>
+                        ) : (
+                          <div className="max-h-44 overflow-y-auto divide-y divide-slate-200/60 bg-white rounded-lg border border-slate-200/70">
+                            {reads.map((r) => (
+                              <div
+                                key={r.id}
+                                className="px-3 py-2 flex items-center justify-between gap-2 text-xs"
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <CheckCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                  <span className="font-bold text-slate-800 truncate">
+                                    {r.userName}
+                                  </span>
+                                  <span className="text-[11px] text-slate-500 shrink-0">
+                                    · {ROLE_LABELS[r.userRole] || 'مستخدم'}
+                                  </span>
+                                </div>
+                                <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
+                                  {formatHijriDateTime(r.readAt)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
+
+      {/* Compose Support Message Modal */}
+      <SendSupportMessageModal
+        isOpen={isComposeOpen}
+        onClose={() => setIsComposeOpen(false)}
+        onSent={() => {
+          setActiveSection('sent_messages');
+          setTick((t) => t + 1);
+        }}
+      />
 
       {/* Close Ticket Confirmation Modal */}
       {closeTarget && (
@@ -750,6 +983,23 @@ export const SupportTicketsManager: React.FC = () => {
           cancelText="إلغاء"
           type="danger"
           loading={isClosing}
+        />
+      )}
+
+      {/* Delete Sent Message Confirmation Modal */}
+      {deleteMsgTarget && (
+        <ConfirmationModal
+          isOpen={!!deleteMsgTarget}
+          onClose={() => {
+            if (!isDeletingMsg) setDeleteMsgTarget(null);
+          }}
+          onConfirm={handleConfirmDeleteMessage}
+          title="حذف الرسالة المرسلة"
+          message={`هل أنت متأكد من حذف هذه الرسالة؟\n\nسيتم إزالتها نهائياً من سجل الرسائل المرسلة ومن صندوق الوارد لدى جميع المستلمين، ولن يمكن استعادتها بعد الحذف.`}
+          confirmText="نعم، حذف الرسالة"
+          cancelText="إلغاء"
+          type="danger"
+          loading={isDeletingMsg}
         />
       )}
     </div>
